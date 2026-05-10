@@ -51,27 +51,14 @@ const sessionNodes = computed<TreeNode[]>(() =>
 
 const tree = ref<TreeNode[]>([
   {
-    id: 'agents', label: '搭子', icon: 'smart_toy',
+    id: 'agents', label: '我的搭子', icon: 'smart_toy',
     type: 'folder', expanded: true,
-  },
-  {
-    id: 'sessions', label: '对话记录', icon: 'chat_bubble',
-    type: 'folder', expanded: false,
-  },
-  {
-    id: 'knowledge', label: '知识库', icon: 'psychology',
-    type: 'folder', expanded: false, children: [],
-  },
-  {
-    id: 'creations', label: '创作作品', icon: 'palette',
-    type: 'folder', expanded: false, children: [],
   },
 ])
 
 // 获取动态子节点
 function getChildren(node: TreeNode): TreeNode[] {
   if (node.id === 'agents') return agentNodes.value
-  if (node.id === 'sessions') return sessionNodes.value
   return node.children || []
 }
 
