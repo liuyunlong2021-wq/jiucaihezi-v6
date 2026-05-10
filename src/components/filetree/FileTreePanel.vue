@@ -32,7 +32,7 @@ const agentNodes = computed<TreeNode[]>(() =>
   agentStore.agents.map(a => ({
     id: a.id,
     label: a.name,
-    icon: a.icon || 'smart_toy',
+    icon: 'smart_toy',
     type: 'agent' as const,
   }))
 )

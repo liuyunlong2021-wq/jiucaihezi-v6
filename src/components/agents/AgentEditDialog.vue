@@ -1,78 +1,71 @@
 <script setup lang="ts">
 /**
- * AgentEditDialog — 创建/编辑搭子对话框
- * 源自 code.html:
- *   - #modal-agent-edit (行 1907-1917)
- *   - saveAgentEdit() (行 12420-12435)
- *   - openAgentEdit() / closeAgentEdit()
+ * AgentEditDialog — 编辑搭子对话框（SKILL.md 标准格式）
  */
 import { ref, watch } from 'vue'
-import { useAgentStore, type Agent } from '@/stores/agentStore'
+import { useAgentStore } from '@/stores/agentStore'
+import type { SkillConfig } from '@/types/skill'
 
 const agentStore = useAgentStore()
 
 const props = defineProps<{
   visible: boolean
-  editAgent?: Agent | null
+  editAgent?: SkillConfig | null
 }>()
 
-const emit = defineEmits<{
-  (e: 'close'): void
-}>()
+const emit = defineEmits<{ (e: 'close'): void }>()
 
 const name = ref('')
-const icon = ref('smart_toy')
-const systemPrompt = ref('')
+const description = ref('')
+const triggers = ref('')
+const skillContent = ref('')
 
-// 编辑模式时填充
 watch(() => props.editAgent, (agent) => {
   if (agent) {
     name.value = agent.name
-    icon.value = agent.icon || 'smart_toy'
-    systemPrompt.value = agent.systemPrompt || ''
+    description.value = agent.description || ''
+    triggers.value = (agent.triggers || []).join(', ')
+    skillContent.value = agent.skillContent || ''
   } else {
     name.value = ''
-    icon.value = 'smart_toy'
-    systemPrompt.value = ''
+    description.value = ''
+    triggers.value = ''
+    skillContent.value = ''
   }
 }, { immediate: true })
 
-// 保存 — 参考 code.html saveAgentEdit() 行 12420-12435
 function save() {
   const n = name.value.trim()
   if (!n) return
 
+  const triggerArr = triggers.value.split(/[,，]/).map(t => t.trim()).filter(Boolean)
+
   if (props.editAgent) {
-    // 编辑已有搭子
-    const custom = agentStore.getCustomAgents()
-    const ag = custom.find(c => c.id === props.editAgent!.id)
-    if (ag) {
-      ag.name = n
-      ag.icon = icon.value.trim() || 'smart_toy'
-      ag.systemPrompt = systemPrompt.value
-      agentStore.saveCustomAgents(agentStore.PRESETS.concat(custom))
-    }
+    agentStore.updateSkill(props.editAgent.id, {
+      name: n,
+      description: description.value,
+      triggers: triggerArr,
+      skillContent: skillContent.value,
+    })
   } else {
-    // 新建搭子
-    const newAgent: Agent = {
+    const newSkill: SkillConfig = {
       id: 'custom_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
       name: n,
-      icon: icon.value.trim() || 'smart_toy',
-      systemPrompt: systemPrompt.value,
-      folder: '我的搭子',
+      description: description.value,
+      triggers: triggerArr,
+      skillContent: skillContent.value,
+      references: [],
+      examples: [],
+      version: 1,
       source: 'user',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      evolutionLog: [],
     }
-    agentStore.createAgent(newAgent)
+    agentStore.createAgent(newSkill)
   }
   emit('close')
 }
-
-// 预览图标列表
-const commonIcons = [
-  'smart_toy', 'draw', 'auto_stories', 'movie', 'palette', 
-  'psychology', 'auto_awesome', 'code', 'music_note', 'image',
-  'translate', 'school', 'science', 'analytics', 'terminal',
-]
 </script>
 
 <template>
@@ -81,43 +74,39 @@ const commonIcons = [
       <div class="ae-box">
         <h2 class="serif">{{ editAgent ? '编辑搭子' : '创建搭子' }}</h2>
 
-        <!-- 名称 — 行 1910 -->
+        <!-- 名称 -->
         <div class="ae-field">
           <label>名称</label>
           <input v-model="name" type="text" placeholder="搭子名称" />
         </div>
 
-        <!-- 图标 — 行 1911 -->
+        <!-- 描述 -->
         <div class="ae-field">
-          <label>图标</label>
-          <div class="ae-icon-row">
-            <input v-model="icon" type="text" placeholder="smart_toy" class="ae-icon-input" />
-            <span class="mso ae-preview">{{ icon || 'smart_toy' }}</span>
-          </div>
-          <div class="ae-icon-grid">
-            <button
-              v-for="ic in commonIcons"
-              :key="ic"
-              class="ae-icon-chip"
-              :class="{ active: icon === ic }"
-              @click="icon = ic"
-            >
-              <span class="mso">{{ ic }}</span>
-            </button>
-          </div>
+          <label>描述（什么时候激活 + 职责）</label>
+          <input v-model="description" type="text" placeholder="当用户需要..." />
         </div>
 
-        <!-- System Prompt -->
+        <!-- 触发词 -->
         <div class="ae-field">
-          <label>系统提示词</label>
+          <label>触发关键词（逗号隔开）</label>
+          <input v-model="triggers" type="text" placeholder="小红书, 种草, 文案" />
+        </div>
+
+        <!-- SKILL.md 内容 -->
+        <div class="ae-field">
+          <label>SKILL.md 内容</label>
           <textarea
-            v-model="systemPrompt"
-            placeholder="告诉搭子它是什么角色、有什么技能..."
-            rows="5"
-          />
+            v-model="skillContent"
+            placeholder="## 角色定义
+…
+## 工作流程
+…
+## 输出格式
+…"
+            rows="8"
+          ></textarea>
         </div>
 
-        <!-- Actions — 行 1912-1915 -->
         <div class="ae-actions">
           <button class="ae-btn ae-ghost" @click="emit('close')">取消</button>
           <button class="ae-btn ae-primary" @click="save" :disabled="!name.trim()">

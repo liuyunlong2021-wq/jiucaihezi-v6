@@ -3,16 +3,19 @@
  * ChatPanel — 对话面板容器
  * 源自 code.html #chat-panel (行 1094-1169)
  * 
- * 使用 useChat composable + agentStore + sessionStore
+ * 集成：superpowers 路由 + karpathy-wiki 自动收集 + SKILL.md
  */
 import { ref, nextTick, watch, computed, onMounted } from 'vue'
 import { useChat } from '@/composables/useChat'
 import { useAgentStore, PILL_MODELS } from '@/stores/agentStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useSkillRouter } from '@/composables/useSkillRouter'
+import { ingestConversation } from '@/composables/useBrain'
 
 const agentStore = useAgentStore()
 const sessionStore = useSessionStore()
 const { messages, isStreaming, sendMessage, stopStream, clearMessages, loadMessages } = useChat()
+const { routeNotification, isRouting, routeMessage } = useSkillRouter()
 
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
@@ -35,11 +38,23 @@ watch(messages, () => {
   })
 }, { deep: true })
 
-// 发送消息 + 自动保存
+// 发送消息 + 自动保存 + superpowers 路由 + karpathy-wiki 自动收集
 async function handleSend() {
   if (!inputText.value.trim() || isStreaming.value) return
   const text = inputText.value
   inputText.value = ''
+
+  // superpowers 路由：路由开关 ON 时自动分析意图
+  if (agentStore.routerEnabled) {
+    const result = await routeMessage(text, agentStore.agents)
+    if (result.strategy === 'single' && result.matched.length > 0) {
+      agentStore.selectAgent(result.matched[0].skillId)
+      // 如果 selectAgent toggle 掉了（因为已选中），再选一次
+      if (!agentStore.currentAgent || agentStore.currentAgent.id !== result.matched[0].skillId) {
+        agentStore.selectAgent(result.matched[0].skillId)
+      }
+    }
+  }
 
   // 首次发消息时创建 session
   if (!currentSessionId) {
@@ -47,7 +62,7 @@ async function handleSend() {
   }
 
   await sendMessage(text, {
-    systemPrompt: agentStore.currentAgent?.systemPrompt || undefined,
+    systemPrompt: agentStore.currentAgent?.skillContent || undefined,
     agentId: agentStore.currentAgent?.id,
     agentName: currentAgentName.value,
   })
@@ -58,6 +73,13 @@ async function handleSend() {
     agentStore.currentAgent?.id || '',
     messages.value,
   )
+
+  // karpathy-wiki 自动收集：路由 ON 时，对话自动追加到搭子的 raw/
+  if (agentStore.routerEnabled && agentStore.currentAgent) {
+    const lastTwo = messages.value.slice(-2)
+    const convo = lastTwo.map(m => `${m.role}: ${m.content}`).join('\n')
+    ingestConversation(agentStore.currentAgent.id, convo)
+  }
 }
 
 // 新对话
@@ -102,10 +124,10 @@ onMounted(() => {
     <!-- Header — from code.html #chat-panel-header (行 1095-1118) -->
     <div class="cp-header">
       <div class="cp-title">
-        <span class="mso" style="font-size: 17px; color: var(--olive-dark);">
-          {{ agentStore.currentAgent?.icon || 'smart_toy' }}
-        </span>
+        <span class="mso" style="font-size: 17px; color: var(--olive-dark);">smart_toy</span>
         <span class="cp-name">{{ currentAgentName }}</span>
+        <span v-if="routeNotification" class="cp-route-badge">{{ routeNotification }}</span>
+        <span v-if="isRouting" class="cp-route-badge routing">🔄 路由中...</span>
       </div>
       <div class="cp-actions">
         <!-- 模型选择 — from code.html 行 2798-2838 -->
@@ -150,7 +172,7 @@ onMounted(() => {
         <div class="msg-meta">
           <div class="msg-meta-avatar">
             <span class="mso" style="font-size: 14px;">
-              {{ msg.role === 'user' ? 'person' : (agentStore.currentAgent?.icon || 'smart_toy') }}
+              {{ msg.role === 'user' ? 'person' : 'smart_toy' }}
             </span>
           </div>
           <span class="msg-meta-name">
@@ -245,6 +267,25 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 240px;
+}
+.cp-route-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--olive);
+  color: #fff;
+  font-weight: 600;
+  animation: routeFade 3s forwards;
+}
+.cp-route-badge.routing {
+  background: var(--line);
+  color: var(--ink3);
+  animation: none;
+}
+@keyframes routeFade {
+  0% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
 }
 .cp-actions {
   display: flex;
