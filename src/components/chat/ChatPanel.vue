@@ -3,19 +3,28 @@
  * ChatPanel — 对话面板容器
  * 源自 code.html #chat-panel (行 1094-1169)
  * 
- * 使用 useChat composable 实现真实的 streaming 对话
+ * 使用 useChat composable + agentStore + sessionStore
  */
-import { ref, nextTick, watch } from 'vue'
+import { ref, nextTick, watch, computed, onMounted } from 'vue'
 import { useChat } from '@/composables/useChat'
+import { useAgentStore, PILL_MODELS } from '@/stores/agentStore'
+import { useSessionStore } from '@/stores/sessionStore'
 
-const { messages, isStreaming, sendMessage, stopStream } = useChat()
-
-// 当前搭子信息（后续从 agentStore 获取）
-const currentAgentName = ref('默认助手')
-const currentModel = ref(localStorage.getItem('jcModel') || '选择模型')
+const agentStore = useAgentStore()
+const sessionStore = useSessionStore()
+const { messages, isStreaming, sendMessage, stopStream, clearMessages, loadMessages } = useChat()
 
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
+const showModelMenu = ref(false)
+
+// 当前搭子名称 (响应式)
+const currentAgentName = computed(() =>
+  agentStore.currentAgent?.name || '直接对话'
+)
+
+// 当前 sessionId
+let currentSessionId = ''
 
 // 自动滚动到底部
 watch(messages, () => {
@@ -26,19 +35,46 @@ watch(messages, () => {
   })
 }, { deep: true })
 
-// 发送消息
+// 发送消息 + 自动保存
 async function handleSend() {
   if (!inputText.value.trim() || isStreaming.value) return
   const text = inputText.value
   inputText.value = ''
+
+  // 首次发消息时创建 session
+  if (!currentSessionId) {
+    currentSessionId = sessionStore.startNewSession(agentStore.currentAgent?.id || '')
+  }
+
   await sendMessage(text, {
+    systemPrompt: agentStore.currentAgent?.systemPrompt || undefined,
+    agentId: agentStore.currentAgent?.id,
     agentName: currentAgentName.value,
   })
+
+  // 保存到 IndexedDB
+  sessionStore.saveSession(
+    currentSessionId,
+    agentStore.currentAgent?.id || '',
+    messages.value,
+  )
+}
+
+// 新对话
+function startNew() {
+  clearMessages()
+  currentSessionId = ''
+  sessionStore.switchSession('')
+}
+
+// 切换模型 — 行 2784
+function selectModel(modelId: string) {
+  agentStore.setModel(modelId)
+  showModelMenu.value = false
 }
 
 // 处理键盘事件 — 对应 code.html chatKeydown (行 1159)
 function onKeydown(e: KeyboardEvent) {
-  // Cmd/Ctrl+Enter 发送
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault()
     handleSend()
@@ -55,10 +91,10 @@ function handleInput(e: Event) {
   autoGrow(e.target as HTMLTextAreaElement)
 }
 
-// 停止生成
-function handleStop() {
-  stopStream()
-}
+onMounted(() => {
+  agentStore.restoreLastAgent()
+  sessionStore.loadAllSessions()
+})
 </script>
 
 <template>
@@ -66,15 +102,31 @@ function handleStop() {
     <!-- Header — from code.html #chat-panel-header (行 1095-1118) -->
     <div class="cp-header">
       <div class="cp-title">
-        <span class="mso" style="font-size: 17px; color: var(--olive-dark);">smart_toy</span>
+        <span class="mso" style="font-size: 17px; color: var(--olive-dark);">
+          {{ agentStore.currentAgent?.icon || 'smart_toy' }}
+        </span>
         <span class="cp-name">{{ currentAgentName }}</span>
       </div>
       <div class="cp-actions">
-        <button class="cp-model-btn" title="切换模型">
-          <span class="mso" style="font-size: 14px;">deployed_code</span>
-          {{ currentModel }}
-        </button>
-        <button class="cp-act-btn" title="新对话" @click="messages = []">
+        <!-- 模型选择 — from code.html 行 2798-2838 -->
+        <div class="cp-model-wrap">
+          <button class="cp-model-btn" @click="showModelMenu = !showModelMenu">
+            <span class="mso" style="font-size: 14px;">deployed_code</span>
+            {{ agentStore.modelLabel }}
+          </button>
+          <div v-if="showModelMenu" class="cp-model-menu">
+            <button
+              v-for="m in PILL_MODELS"
+              :key="m.id"
+              class="cp-model-item"
+              :class="{ active: m.id === agentStore.currentModel }"
+              @click="selectModel(m.id)"
+            >
+              {{ m.label }}
+            </button>
+          </div>
+        </div>
+        <button class="cp-act-btn" title="新对话" @click="startNew">
           <span class="mso">add</span>
         </button>
       </div>
@@ -98,7 +150,7 @@ function handleStop() {
         <div class="msg-meta">
           <div class="msg-meta-avatar">
             <span class="mso" style="font-size: 14px;">
-              {{ msg.role === 'user' ? 'person' : 'smart_toy' }}
+              {{ msg.role === 'user' ? 'person' : (agentStore.currentAgent?.icon || 'smart_toy') }}
             </span>
           </div>
           <span class="msg-meta-name">
@@ -139,7 +191,7 @@ function handleStop() {
           <button
             v-if="isStreaming"
             class="cp-stop"
-            @click="handleStop"
+            @click="stopStream"
             title="停止生成"
           >
             <span class="mso">stop</span>
@@ -405,4 +457,48 @@ function handleStop() {
   color: #fff;
 }
 .cp-stop:hover { transform: scale(1.05); }
+
+/* Model dropdown — from code.html 行 704-712 */
+.cp-model-wrap {
+  position: relative;
+}
+.cp-model-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.cp-model-item {
+  padding: 7px 12px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink2);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: all 0.12s;
+}
+.cp-model-item:hover {
+  background: var(--olive-pale);
+  color: var(--olive-dark);
+}
+.cp-model-item.active {
+  background: rgba(213, 199, 135, 0.18);
+  color: var(--olive-dark);
+}
 </style>

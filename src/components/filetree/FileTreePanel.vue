@@ -1,20 +1,22 @@
 <script setup lang="ts">
 /**
  * FileTreePanel — 全局文件树底座
- * 源自 code.html #folder-col (行 1044-1077)
+ * 源自 code.html #folder-col (行 1044-1077) + #sidebar (行 1060-1067)
  * 
  * 文件树是全局的底座，所有内容都在这里：
- * - 搭子列表
- * - 对话记录
+ * - 搭子列表 (from agentStore)
+ * - 对话记录 (from sessionStore)
  * - 知识库文件
  * - 创作作品
  */
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { useAgentStore } from '@/stores/agentStore'
+import { useSessionStore } from '@/stores/sessionStore'
+
+const agentStore = useAgentStore()
+const sessionStore = useSessionStore()
 
 const searchQuery = ref('')
-
-// TODO: 从 agentStore / sessionStore 拉取数据渲染树节点
-// 这里先用占位数据展示结构
 
 interface TreeNode {
   id: string
@@ -25,40 +27,51 @@ interface TreeNode {
   expanded?: boolean
 }
 
+// 动态构建搭子列表
+const agentNodes = computed<TreeNode[]>(() =>
+  agentStore.agents.map(a => ({
+    id: a.id,
+    label: a.name,
+    icon: a.icon || 'smart_toy',
+    type: 'agent' as const,
+  }))
+)
+
+// 动态构建对话列表
+const sessionNodes = computed<TreeNode[]>(() =>
+  sessionStore.sessions.slice(0, 20).map(s => ({
+    id: s.id,
+    label: s.title || '无主题对话',
+    icon: 'chat_bubble',
+    type: 'session' as const,
+  }))
+)
+
 const tree = ref<TreeNode[]>([
   {
-    id: 'agents',
-    label: '搭子',
-    icon: 'smart_toy',
-    type: 'folder',
-    expanded: true,
-    children: []
+    id: 'agents', label: '搭子', icon: 'smart_toy',
+    type: 'folder', expanded: true,
   },
   {
-    id: 'sessions',
-    label: '对话记录',
-    icon: 'chat_bubble',
-    type: 'folder',
-    expanded: false,
-    children: []
+    id: 'sessions', label: '对话记录', icon: 'chat_bubble',
+    type: 'folder', expanded: false,
   },
   {
-    id: 'knowledge',
-    label: '知识库',
-    icon: 'psychology',
-    type: 'folder',
-    expanded: false,
-    children: []
+    id: 'knowledge', label: '知识库', icon: 'psychology',
+    type: 'folder', expanded: false, children: [],
   },
   {
-    id: 'creations',
-    label: '创作作品',
-    icon: 'palette',
-    type: 'folder',
-    expanded: false,
-    children: []
-  }
+    id: 'creations', label: '创作作品', icon: 'palette',
+    type: 'folder', expanded: false, children: [],
+  },
 ])
+
+// 获取动态子节点
+function getChildren(node: TreeNode): TreeNode[] {
+  if (node.id === 'agents') return agentNodes.value
+  if (node.id === 'sessions') return sessionNodes.value
+  return node.children || []
+}
 
 function toggleFolder(node: TreeNode) {
   if (node.type === 'folder') {
@@ -66,9 +79,16 @@ function toggleFolder(node: TreeNode) {
   }
 }
 
-const emit = defineEmits<{
-  (e: 'select', node: TreeNode): void
-}>()
+// 点击搭子 → 切换搭子（行 4741）
+function handleNodeClick(node: TreeNode) {
+  if (node.type === 'agent') {
+    agentStore.selectAgent(node.id)
+  }
+}
+
+onMounted(() => {
+  sessionStore.loadAllSessions()
+})
 </script>
 
 <template>
@@ -111,16 +131,17 @@ const emit = defineEmits<{
           >chevron_right</span>
           <span class="mso ft-icon">{{ node.icon }}</span>
           <span class="ft-label">{{ node.label }}</span>
-          <span v-if="node.children?.length" class="ft-badge">{{ node.children.length }}</span>
+          <span v-if="getChildren(node).length" class="ft-badge">{{ getChildren(node).length }}</span>
         </div>
 
-        <!-- Children -->
-        <div v-if="node.expanded && node.children?.length" class="ft-children">
+        <!-- Children (dynamic) -->
+        <div v-if="node.expanded && getChildren(node).length" class="ft-children">
           <div
-            v-for="child in node.children"
+            v-for="child in getChildren(node)"
             :key="child.id"
             class="ft-item ft-child"
-            @click="emit('select', child)"
+            :class="{ active: child.type === 'agent' && agentStore.currentAgent?.id === child.id }"
+            @click="handleNodeClick(child)"
           >
             <span class="mso ft-icon">{{ child.icon }}</span>
             <span class="ft-label">{{ child.label }}</span>
@@ -128,7 +149,7 @@ const emit = defineEmits<{
         </div>
 
         <!-- Empty state -->
-        <div v-if="node.expanded && !node.children?.length" class="ft-empty">
+        <div v-if="node.expanded && !getChildren(node).length" class="ft-empty">
           暂无内容
         </div>
       </div>
