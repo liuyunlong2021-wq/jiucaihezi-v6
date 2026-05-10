@@ -16,14 +16,50 @@ const searchQuery = ref('')
 // 牛马开关（superpower 路由）
 const niuMaEnabled = ref(false)
 
-onMounted(() => {
-  niuMaEnabled.value = localStorage.getItem('jc_niuma') === 'true'
-  sessionStore.loadAllSessions()
-})
-
 function toggleNiuMa() {
   niuMaEnabled.value = !niuMaEnabled.value
   localStorage.setItem('jc_niuma', String(niuMaEnabled.value))
+}
+
+// 迁移 toast
+const migrationToast = ref('')
+
+onMounted(() => {
+  niuMaEnabled.value = localStorage.getItem('jc_niuma') === 'true'
+  sessionStore.loadAllSessions()
+  // 显示迁移 toast
+  if (agentStore.migrationCount > 0) {
+    migrationToast.value = `已从旧版本导入 ${agentStore.migrationCount} 个搭子 ✨`
+    setTimeout(() => { migrationToast.value = '' }, 5000)
+  }
+})
+
+// L2: 粘贴即导入 — 搜索框粘贴长文本自动创建搭子
+function onSearchPaste(e: ClipboardEvent) {
+  const text = e.clipboardData?.getData('text') || ''
+  if (text.length > 50) {
+    // 长文本 = 系统提示词，自动导入
+    e.preventDefault()
+    const skill = agentStore.importFromText(text)
+    if (skill) {
+      migrationToast.value = `已导入搭子「${skill.name}」 ✨`
+      setTimeout(() => { migrationToast.value = '' }, 3000)
+      searchQuery.value = ''
+    }
+  }
+}
+
+// L3: JSON 批量导入
+function importJSON() {
+  const json = prompt('粘贴旧搭子 JSON 数组 (从旧版本导出):')
+  if (!json) return
+  const count = agentStore.importFromJSON(json)
+  if (count > 0) {
+    migrationToast.value = `成功导入 ${count} 个搭子 ✨`
+    setTimeout(() => { migrationToast.value = '' }, 3000)
+  } else {
+    alert('导入失败，请检查 JSON 格式')
+  }
 }
 
 interface TreeNode {
@@ -84,10 +120,17 @@ function handleNodeClick(node: TreeNode) {
       </button>
     </div>
 
-    <!-- Search -->
+    <!-- Migration toast -->
+    <div v-if="migrationToast" class="ft-toast">{{ migrationToast }}</div>
+
+    <!-- Search (粘贴长文本自动导入搭子) -->
     <div class="ft-search">
       <span class="mso" style="font-size: 15px;">search</span>
-      <input v-model="searchQuery" placeholder="搜索..." type="text" />
+      <input v-model="searchQuery" placeholder="搜索 / 粘贴旧搭子提示词..." type="text"
+             @paste="onSearchPaste" />
+      <button class="ft-import-btn" @click="importJSON" title="导入旧搭子 JSON">
+        <span class="mso" style="font-size: 14px;">upload</span>
+      </button>
     </div>
 
     <!-- Tree -->
@@ -164,4 +207,20 @@ function handleNodeClick(node: TreeNode) {
 .ft-child { padding-left: 36px; }
 .ft-children { display: block; }
 .ft-empty { padding: 8px 12px 8px 36px; font-size: 11px; color: var(--ink3); font-style: italic; }
+
+/* 迁移 toast */
+.ft-toast {
+  margin: 0 10px 6px; padding: 8px 12px; border-radius: 8px;
+  background: var(--olive); color: #fff; font-size: 12px; font-weight: 600;
+  text-align: center; animation: toast-in 0.3s ease;
+}
+@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* 导入按钮 */
+.ft-import-btn {
+  width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--ink3); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.ft-import-btn:hover { color: var(--olive-dark); border-color: var(--olive); }
 </style>

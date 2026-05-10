@@ -9,7 +9,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { SkillConfig } from '../types/skill'
-import { migrateAgentToSkill } from '../types/skill'
+import { migrateAgentToSkill, parseSkillMd } from '../types/skill'
 
 // ─── 向后兼容：旧 Agent 类型（迁移用） ───
 export interface Agent {
@@ -220,14 +220,162 @@ export const useAgentStore = defineStore('agents', () => {
   const currentModel = ref(localStorage.getItem('jcModel') || 'claude-sonnet-4-6')
   const routerEnabled = ref(localStorage.getItem('jc_router_enabled') !== '0')
 
-  // ─── 迁移旧数据 ───
-  function migrateOldAgents(): SkillConfig[] {
+  // ═══ 三层迁移系统 ═══
+
+  // 迁移状态（给 UI 弹 toast 用）
+  const migrationCount = ref(0)
+
+  // ─── L1: 自动嗅探 — 扫描所有已知 V5 localStorage key ───
+  function autoSniffMigration(): SkillConfig[] {
+    // 如果已经迁移过，跳过
+    if (localStorage.getItem('jc_migration_done') === '1') return []
+
+    const migrated: SkillConfig[] = []
+    const existingIds = new Set<string>()
+
+    // 所有已知的 V5 存储 key 格式
+    const V5_KEYS = [
+      'jc_agents_v1',           // V5 标准格式
+      'agents',                 // 最早版本
+      'customAgents',           // 桌面版
+      'daziList',               // 搭子Studio
+      'dazi_agents',            // 搭子Studio 另一个 key
+      'jc_custom_agents',       // V4 格式
+      'assistants',             // 通用格式
+    ]
+
+    for (const key of V5_KEYS) {
+      try {
+        const raw = localStorage.getItem(key)
+        if (!raw) continue
+        const arr = JSON.parse(raw)
+        if (!Array.isArray(arr)) continue
+
+        for (const item of arr) {
+          // 兼容多种旧格式
+          const id = item.id || item.name || ('v5_' + Math.random().toString(36).slice(2, 8))
+          if (existingIds.has(id)) continue
+
+          const name = item.name || item.label || item.title || '旧搭子'
+          const prompt = item.systemPrompt || item.system_prompt || item.prompt || item.content || item.instruction || ''
+
+          if (!prompt && !name) continue // 空数据跳过
+
+          migrated.push(migrateAgentToSkill({
+            id: 'v5_' + id.replace(/[^a-zA-Z0-9_]/g, '_'),
+            name,
+            systemPrompt: prompt,
+            source: 'user',
+          }))
+          existingIds.add(id)
+        }
+      } catch { /* 格式不对的 key 静默跳过 */ }
+    }
+
+    if (migrated.length > 0) {
+      migrationCount.value = migrated.length
+      localStorage.setItem('jc_migration_done', '1')
+    }
+
+    return migrated
+  }
+
+  // ─── L2: 粘贴即导入 — 纯文本系统提示词 → SkillConfig ───
+  function importFromText(text: string, name?: string): SkillConfig | null {
+    const trimmed = text.trim()
+    if (!trimmed) return null
+
+    // 尝试判断是否是 SKILL.md 格式
+    if (trimmed.startsWith('---\n')) {
+      const parsed = parseSkillMd(trimmed)
+      const skill: SkillConfig = {
+        id: parsed.id || 'paste_' + Date.now().toString(36),
+        name: parsed.name || name || '粘贴搭子',
+        description: parsed.description || trimmed.slice(0, 80),
+        triggers: parsed.triggers || [],
+        skillContent: parsed.skillContent || trimmed,
+        references: [],
+        examples: [],
+        version: 1,
+        source: 'user',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        evolutionLog: [],
+      }
+      createAgent(skill)
+      return skill
+    }
+
+    // 纯文本 → 直接当 systemPrompt
+    const autoName = name || extractNameFromPrompt(trimmed)
+    const skill: SkillConfig = {
+      id: 'paste_' + Date.now().toString(36),
+      name: autoName,
+      description: trimmed.slice(0, 100).replace(/\n/g, ' '),
+      triggers: [autoName],
+      skillContent: trimmed,
+      references: [],
+      examples: [],
+      version: 1,
+      source: 'user',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      evolutionLog: [],
+    }
+    createAgent(skill)
+    return skill
+  }
+
+  // ─── L3: JSON 批量导入 ───
+  function importFromJSON(jsonStr: string): number {
     try {
-      const raw = localStorage.getItem('jc_agents_v1')
-      if (!raw) return []
-      const old = JSON.parse(raw) as Agent[]
-      return old.map(a => migrateAgentToSkill(a))
-    } catch { return [] }
+      const arr = JSON.parse(jsonStr)
+      if (!Array.isArray(arr)) return 0
+      let count = 0
+      for (const item of arr) {
+        const name = item.name || item.label || '导入搭子'
+        const prompt = item.systemPrompt || item.system_prompt || item.prompt || item.content || ''
+        if (!prompt && !name) continue
+        const skill: SkillConfig = {
+          id: 'import_' + Date.now().toString(36) + '_' + count,
+          name,
+          description: (item.description || prompt.slice(0, 80)).replace(/\n/g, ' '),
+          triggers: item.triggers || [name],
+          skillContent: prompt,
+          references: [],
+          examples: [],
+          version: 1,
+          source: 'user',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          evolutionLog: [],
+        }
+        createAgent(skill)
+        count++
+      }
+      return count
+    } catch { return 0 }
+  }
+
+  // 从提示词自动提取名字
+  function extractNameFromPrompt(prompt: string): string {
+    // 尝试匹配 "你是XXX" / "你扮演XXX" / "## 角色: XXX"
+    const patterns = [
+      /你是[「『""]?(.{2,12})[」』""]?/,
+      /角色[:：]\s*(.{2,12})/,
+      /扮演[「『""]?(.{2,12})[」』""]?/,
+      /^#\s+(.{2,15})/m,
+    ]
+    for (const p of patterns) {
+      const m = prompt.match(p)
+      if (m) return m[1].replace(/[，。、！？]/g, '').trim()
+    }
+    return '导入搭子 ' + new Date().toLocaleDateString('zh-CN')
+  }
+
+  // ─── 迁移旧数据 (兼容原有调用) ───
+  function migrateOldAgents(): SkillConfig[] {
+    return autoSniffMigration()
   }
 
   // ─── loadSkills ───
@@ -332,6 +480,7 @@ export const useAgentStore = defineStore('agents', () => {
     currentAgent,
     currentModel,
     routerEnabled,
+    migrationCount,
     agents,
     modelLabel,
     loadAgents,
@@ -347,6 +496,8 @@ export const useAgentStore = defineStore('agents', () => {
     updateSkill,
     deleteAgent,
     toggleRouter,
+    importFromText,
+    importFromJSON,
     PRESETS: SKILL_PRESETS,
   }
 })
