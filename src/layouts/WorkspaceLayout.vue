@@ -18,8 +18,11 @@ import ActivityRail from '@/components/rail/ActivityRail.vue'
 import FileTreePanel from '@/components/filetree/FileTreePanel.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import CanvasFrame from '@/components/canvas/CanvasFrame.vue'
+import SettingsPanel from '@/components/settings/SettingsPanel.vue'
+import AgentEditDialog from '@/components/agents/AgentEditDialog.vue'
 
 const activeMode = ref('chat')
+const showAgentEditor = ref(false)
 
 // Panel widths (resizable)
 const fileTreeWidth = ref(180)
@@ -93,9 +96,12 @@ function onModeSwitch(mode: string) {
 
       <!-- Agent management -->
       <div v-else-if="activeMode === 'agents'" class="ws-placeholder">
-        <span class="mso" style="font-size: 36px; color: var(--ink3);">smart_toy</span>
-        <p>搭子管理面板</p>
-        <p class="ws-hint">（下一步实现）</p>
+        <span class="mso" style="font-size: 36px; color: var(--olive);">smart_toy</span>
+        <p>搭子管理</p>
+        <button class="ws-action-btn" @click="showAgentEditor = true">
+          <span class="mso" style="font-size: 16px;">add</span>
+          创建搭子
+        </button>
       </div>
 
       <!-- Brain -->
@@ -113,11 +119,7 @@ function onModeSwitch(mode: string) {
       </div>
 
       <!-- Settings -->
-      <div v-else-if="activeMode === 'settings'" class="ws-placeholder">
-        <span class="mso" style="font-size: 36px; color: var(--ink3);">settings</span>
-        <p>设置面板</p>
-        <p class="ws-hint">（下一步实现）</p>
-      </div>
+      <SettingsPanel v-else-if="activeMode === 'settings'" />
 
       <div
         class="ws-resize-handle"
@@ -129,6 +131,12 @@ function onModeSwitch(mode: string) {
     <div class="ws-canvas">
       <CanvasFrame />
     </div>
+
+    <!-- Agent Edit Dialog -->
+    <AgentEditDialog
+      :visible="showAgentEditor"
+      @close="showAgentEditor = false"
+    />
   </div>
 </template>
 
@@ -203,4 +211,21 @@ function onModeSwitch(mode: string) {
   font-weight: 400 !important;
   color: var(--ink3);
 }
+.ws-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 20px;
+  border: none;
+  border-radius: 10px;
+  background: var(--olive);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform 0.1s;
+}
+.ws-action-btn:hover { transform: scale(1.03); }
 </style>
