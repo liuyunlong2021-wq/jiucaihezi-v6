@@ -104,7 +104,7 @@ export function useChat() {
     // 1. 解析 API 配置 (行 10230-10233)
     let config: ApiConfig
     try {
-      config = resolveApiConfig()
+      config = await resolveApiConfig()
     } catch (err) {
       messages.value.push({
         id: createMessageId('assistant'),

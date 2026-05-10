@@ -10,27 +10,41 @@ export interface ApiConfig {
   model: string
 }
 
-const DEFAULT_API_BASE = 'https://api.jiucaihezi.studio'
 const DEFAULT_MODEL = 'claude-sonnet-4-6'
 
 /**
  * 从 localStorage 解析 API 配置
  * 精确复制自 code.html 行 9845-9870 的 resolveApiConfig()
  */
-export function resolveApiConfig(): ApiConfig {
-  let apiKey = localStorage.getItem('jcApiKey') || ''
-  const apiBase = (
-    localStorage.getItem('jcApiBase') || DEFAULT_API_BASE
-  ).replace(/\/+$/, '').replace(/\/v1$/, '')
-  const model = localStorage.getItem('jcModel') || DEFAULT_MODEL
+export async function resolveApiConfig(): Promise<ApiConfig> {
+  const config = {
+    apiKey: localStorage.getItem('jcApiKey') || '',
+    // 行 9848: 回退链 localStorage → JC_DEFAULT_API_BASE → window.location.origin
+    apiBase: (localStorage.getItem('jcApiBase') || ((window as any).JC_DEFAULT_API_BASE || window.location.origin)).replace(/\/+$/, '').replace(/\/v1$/, ''),
+    model: localStorage.getItem('jcModel') || DEFAULT_MODEL,
+  }
 
-  // Decode base64-encoded key (原代码行 10231, 9860-9863)
+  // 行 9851-9857: JC_WORKSPACE.getConfig 覆盖（桌面版 Tauri 用）
+  if ((window as any).JC_WORKSPACE?.getConfig) {
+    try {
+      const shared = await (window as any).JC_WORKSPACE.getConfig()
+      config.apiKey = shared.apiKey || config.apiKey
+      config.apiBase = (shared.apiBase || config.apiBase || ((window as any).JC_DEFAULT_API_BASE || window.location.origin)).replace(/\/+$/, '').replace(/\/v1$/, '')
+      config.model = shared.model || config.model
+    } catch (_) {}
+  }
+
+  // Decode base64-encoded key (行 9859-9863)
+  let apiKey = config.apiKey || ''
   try {
     const decoded = atob(apiKey)
     if (decoded.startsWith('sk-')) apiKey = decoded
   } catch (_) {}
 
-  return { apiKey, apiBase, model }
+  // 行 9864: 无 key 时抛错
+  if (!apiKey) throw new Error('未检测到 API Key，请先在设置中填写')
+
+  return { apiKey, apiBase: config.apiBase, model: config.model }
 }
 
 /**
@@ -61,20 +75,42 @@ export function checkAuth(): boolean {
 }
 
 /**
- * 构建 chat 错误信息 — 简化自 code.html 的 buildChatErrorMessage
+ * 构建 chat 错误信息 — 精确复制自 code.html 行 10219-10224
  */
-export function buildChatErrorMessage(status: number, body: any, fallback: string): string {
-  if (status === 401 || status === 403) {
-    return '⚠️ API Key 无效或已过期，请检查设置'
+export function buildChatErrorMessage(status: number, payload: any, fallbackText: string): string {
+  const providerMessage = payload?.error?.message
+    ? payload.error.message
+    : (payload?.message ? payload.message : fallbackText)
+  return 'API ' + status + ': ' + String(providerMessage || '请求失败')
+}
+
+/**
+ * 构建云同步请求头 — 精确复制自 code.html 行 2156-2181
+ * 用于对话历史/搭子/偏好等云同步
+ */
+export function buildCloudSyncHeaders(): Record<string, string> {
+  const hdrs: Record<string, string> = { 'Content-Type': 'application/json' }
+  const PLACEHOLDER = '__JC_MANAGED_SESSION__'
+  // 行 2160-2164: 优先级从高到低尝试所有 token
+  const candidates = [
+    localStorage.getItem('jcUserAccessToken'),
+    localStorage.getItem('jcMemberAccessToken'),
+    localStorage.getItem('jcMemberApiKey'),
+    localStorage.getItem('jcApiKey'),
+  ]
+  let accessToken = ''
+  for (const c of candidates) {
+    const v = String(c || '').trim()
+    if (v && v !== PLACEHOLDER) { accessToken = v; break }
   }
-  if (status === 402) {
-    return '⚠️ 余额不足，请充值后继续使用'
+  const userId = String(
+    localStorage.getItem('jcNewApiUserId') ||
+    localStorage.getItem('jcMemberUserId') || ''
+  ).trim()
+  if (accessToken) {
+    hdrs['Authorization'] = 'Bearer ' + accessToken
+    hdrs['x-api-key'] = accessToken
   }
-  if (status === 429) {
-    return '⚠️ 请求过于频繁，请稍后再试'
-  }
-  if (body?.error?.message) {
-    return '⚠️ ' + body.error.message
-  }
-  return '⚠️ 请求失败 (' + status + '): ' + (fallback || '未知错误')
+  if (userId) hdrs['New-API-User'] = userId
+  return hdrs
 }
