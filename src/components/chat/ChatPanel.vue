@@ -28,9 +28,11 @@ function toggleLearning() {
   localStorage.setItem('jc_learning', String(learningEnabled.value))
 }
 
-// 当前搭子名称 (响应式)
-const currentAgentName = computed(() =>
-  agentStore.currentAgent?.name || '直接对话'
+// 当前状态显示：调用搭子 or 直接用模型
+const headerStatus = computed(() =>
+  agentStore.currentAgent
+    ? `正在调用 ${agentStore.currentAgent.name}`
+    : agentStore.modelLabel
 )
 
 // 当前 sessionId
@@ -131,13 +133,12 @@ onMounted(() => {
     <!-- Header — from code.html #chat-panel-header (行 1095-1118) -->
     <div class="cp-header">
       <div class="cp-title">
-        <span class="mso" style="font-size: 17px; color: var(--olive-dark);">smart_toy</span>
-        <span class="cp-name">{{ currentAgentName }}</span>
+        <span class="cp-name">{{ headerStatus }}</span>
         <span v-if="routeNotification" class="cp-route-badge">{{ routeNotification }}</span>
         <span v-if="isRouting" class="cp-route-badge routing">🔄 路由中...</span>
       </div>
       <div class="cp-actions">
-        <!-- 模型选择 — from code.html 行 2798-2838 -->
+        <!-- 模型选择 -->
         <div class="cp-model-wrap">
           <button class="cp-model-btn" @click="showModelMenu = !showModelMenu">
             <span class="mso" style="font-size: 14px;">deployed_code</span>
@@ -155,13 +156,11 @@ onMounted(() => {
             </button>
           </div>
         </div>
-        <button class="cp-act-btn cp-learn-btn" :class="{ on: learningEnabled }"
+        <!-- 学习药丸开关 -->
+        <button class="cp-pill-toggle" :class="{ on: learningEnabled }"
                 title="学习模式（自动摄入对话到知识库）" @click="toggleLearning">
-          <span class="mso" style="font-size: 15px;">school</span>
-          <span class="cp-learn-label">学习</span>
-        </button>
-        <button class="cp-act-btn" title="新对话" @click="startNew">
-          <span class="mso">add</span>
+          <span class="cp-pill-dot"></span>
+          <span class="cp-pill-text">学习</span>
         </button>
       </div>
     </div>
@@ -555,15 +554,25 @@ onMounted(() => {
   color: var(--olive-dark);
 }
 
-/* 学习开关 */
-.cp-learn-btn {
-  display: flex; align-items: center; gap: 3px;
-  padding: 4px 8px; border-radius: 16px;
+/* 药丸开关 */
+.cp-pill-toggle {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 8px 3px 4px; border-radius: 20px;
   border: 1px solid var(--border); background: var(--surface-alt);
-  transition: all .2s;
+  cursor: pointer; font-family: inherit; transition: all .25s;
 }
-.cp-learn-btn.on {
-  background: var(--olive); border-color: var(--olive); color: #fff;
+.cp-pill-toggle:hover { border-color: var(--olive); }
+.cp-pill-toggle.on { background: var(--olive); border-color: var(--olive); }
+.cp-pill-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--ink3); opacity: .3;
+  transition: all .25s; flex-shrink: 0;
 }
-.cp-learn-label { font-size: 10px; font-weight: 700; }
+.cp-pill-toggle.on .cp-pill-dot {
+  background: #fff; opacity: 1; transform: translateX(0);
+}
+.cp-pill-text {
+  font-size: 10px; font-weight: 700; color: var(--ink3); line-height: 1;
+}
+.cp-pill-toggle.on .cp-pill-text { color: #fff; }
 </style>

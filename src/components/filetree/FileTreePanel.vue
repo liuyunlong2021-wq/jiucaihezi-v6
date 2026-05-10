@@ -167,22 +167,24 @@ function handleNodeClick(node: TreeNode) {
 }
 .ft-title { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink3); flex: 1; }
 
-/* 牛马开关 */
+/* 牛马药丸开关 — 圆点左=关 右=开 */
 .ft-niuma-toggle {
   display: flex; align-items: center; gap: 4px;
-  padding: 3px 8px 3px 4px; border-radius: 20px;
+  padding: 3px 4px; border-radius: 20px; min-width: 52px;
   border: 1px solid var(--border); background: var(--surface);
-  cursor: pointer; font-family: inherit; font-size: 10px; font-weight: 700;
-  color: var(--ink3); transition: all .2s;
+  cursor: pointer; font-family: inherit; transition: all .25s;
 }
 .ft-niuma-toggle:hover { border-color: var(--olive); }
-.ft-niuma-toggle.on { background: var(--olive); border-color: var(--olive); color: #fff; }
+.ft-niuma-toggle.on { background: var(--olive); border-color: var(--olive); flex-direction: row-reverse; }
 .ft-niuma-dot {
   width: 14px; height: 14px; border-radius: 50%;
-  background: var(--ink3); opacity: .3; transition: all .2s;
+  background: var(--ink3); opacity: .3; transition: all .25s; flex-shrink: 0;
 }
 .ft-niuma-toggle.on .ft-niuma-dot { background: #fff; opacity: 1; }
-.ft-niuma-label { line-height: 1; }
+.ft-niuma-label {
+  font-size: 10px; font-weight: 700; color: var(--ink3); line-height: 1; padding: 0 2px;
+}
+.ft-niuma-toggle.on .ft-niuma-label { color: #fff; }
 
 .ft-search { padding: 4px 10px 8px; display: flex; align-items: center; gap: 6px; }
 .ft-search .mso { color: var(--ink3); flex-shrink: 0; }

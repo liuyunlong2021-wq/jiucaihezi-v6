@@ -15,12 +15,12 @@ const emit = defineEmits<{
 
 // Rail 按钮 — 每个切换 Col 5 的内容
 const tabs = [
-  { key: 'create',   emoji: '🐂', label: '创建搭子' },
-  { key: 'agents',   emoji: '🐴', label: '搭子仓库' },
-  { key: 'brain',    icon: 'psychology',    label: '长脑子' },
-  { key: 'editor',   icon: 'edit_note',     label: '编辑区' },
-  { key: 'creation', icon: 'photo_camera',  label: '创作面板' },
-  { key: 'storage',  icon: 'inventory_2',   label: '存储空间' },
+  { key: 'create',   icon: 'build_circle',          label: '创建搭子' },
+  { key: 'agents',   icon: 'deployed_code_account',  label: '搭子仓库' },
+  { key: 'brain',    icon: 'psychology',              label: '长脑子' },
+  { key: 'editor',   icon: 'edit_note',               label: '编辑区' },
+  { key: 'creation', icon: 'photo_camera',            label: '创作面板' },
+  { key: 'storage',  icon: 'inventory_2',             label: '存储空间' },
 ]
 
 const bottomTabs = [
@@ -48,8 +48,7 @@ const bottomTabs = [
         :title="t.label"
         @click="emit('switch', t.key)"
       >
-        <span v-if="t.emoji" class="ab-emoji">{{ t.emoji }}</span>
-        <span v-else class="mso">{{ t.icon }}</span>
+        <span class="mso">{{ t.icon }}</span>
       </button>
     </div>
 
@@ -118,10 +117,6 @@ const bottomTabs = [
 .ab-icon.active {
   background: rgba(213, 199, 135, 0.15);
   color: var(--olive-dark);
-}
-.ab-emoji {
-  font-size: 20px;
-  line-height: 1;
 }
 .ab-spacer { flex: 1; }
 </style>
