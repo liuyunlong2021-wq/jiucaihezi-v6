@@ -1,9 +1,8 @@
 <script setup lang="ts">
 /**
  * CreationPanel — 创作面板
- * 搬迁自 code.html L1174-1284 + L17493-17560 + L19130-19275
- * 
- * 包含: 画廊 → 参数条 → 提示词输入 → 生成按钮
+ * 6 模型精简版: gpt-image-2, grok-video-3, veo3.1-fast,
+ *               seedance-2.0, seedance-2.0-fast, suno-5.5
  */
 import { computed, ref } from 'vue'
 import {
@@ -16,22 +15,26 @@ import {
   currentModel,
   availableModels,
   aspectOptions,
+  sizeOptions,
   resolutionOptions,
   durationRange,
   hasDuration,
+  isImageModel,
+  isMusicModel,
   promptPlaceholder,
-  prompt2Placeholder,
-  showSecondaryInput,
-  showVoiceCloneTimes,
+  showTagsInput,
+  showTitleInput,
   switchTask,
   switchModel,
   setAspect,
+  setSize,
   setResolution,
   setDuration,
   addFiles,
   removeFile,
   saveCpState,
 } from '@/composables/useCreation'
+import { runCreation } from '@/composables/useCreationEngine'
 
 // 任务/模型 popover
 const openPop = ref<string>('')
@@ -41,10 +44,7 @@ function togglePop(key: string) {
 
 function onFileSelect(e: Event) {
   const input = e.target as HTMLInputElement
-  if (input.files) {
-    addFiles(input.files)
-    input.value = ''
-  }
+  if (input.files) { addFiles(input.files); input.value = '' }
 }
 
 function onFileDrop(e: DragEvent) {
@@ -52,7 +52,6 @@ function onFileDrop(e: DragEvent) {
   if (e.dataTransfer?.files) addFiles(e.dataTransfer.files)
 }
 
-// 缩略图 URL
 const fileThumbs = computed(() =>
   cpState.files.map((f, i) => ({
     index: i,
@@ -63,35 +62,17 @@ const fileThumbs = computed(() =>
   }))
 )
 
-// 任务列表
 const tasks = computed(() =>
-  Object.entries(RH_TASK_LABELS).map(([key, label]) => ({
-    key: key as CreationTask,
-    label,
-  }))
+  Object.entries(RH_TASK_LABELS).map(([key, label]) => ({ key: key as CreationTask, label }))
 )
 
-// 可用模型列表
 const modelList = computed(() =>
-  availableModels.value.map(k => ({
-    key: k,
-    label: RH_CREATION_MODELS[k]?.label || k,
-  }))
+  availableModels.value.map(k => ({ key: k, label: RH_CREATION_MODELS[k]?.label || k }))
 )
-
-// 生成（占位，后续 useCreationEngine 接入）
-function runCreation() {
-  if (!cpState.prompt.trim() && !currentModel.value?.promptOptional) {
-    alert('请输入提示词')
-    return
-  }
-  alert('创作引擎将在下一步迁移后接入')
-}
 </script>
 
 <template>
   <div class="cp">
-    <!-- 顶部工具栏 -->
     <div class="cp-toolbar">
       <span class="cp-title"><span class="mso">movie_filter</span>创作面板</span>
     </div>
@@ -138,15 +119,31 @@ function runCreation() {
           </button>
         </div>
       </div>
-      <!-- 比例 -->
-      <div v-if="aspectOptions.length" class="cp-island">
-        <div class="cp-island-label">比例</div>
-        <div class="cp-btn-group">
-          <button v-for="a in aspectOptions" :key="a" class="cp-param-btn"
-                  :class="{ active: cpState.ar === a }" @click="setAspect(a)">{{ a }}</button>
+      <!-- 尺寸 (gpt-image-2) -->
+      <div v-if="sizeOptions.length" class="cp-island" @click="togglePop('size')">
+        <div class="cp-island-label">尺寸</div>
+        <div class="cp-island-val">{{ cpState.size }}</div>
+        <div v-if="openPop === 'size'" class="cp-popover" @click.stop>
+          <button v-for="s in sizeOptions" :key="s" class="cp-pop-item"
+                  :class="{ active: cpState.size === s }"
+                  @click="setSize(s); openPop = ''">
+            {{ s }}
+          </button>
         </div>
       </div>
-      <!-- 分辨率 -->
+      <!-- 比例 (视频) -->
+      <div v-if="aspectOptions.length" class="cp-island" @click="togglePop('ar')">
+        <div class="cp-island-label">比例</div>
+        <div class="cp-island-val">{{ cpState.ar }}</div>
+        <div v-if="openPop === 'ar'" class="cp-popover" @click.stop>
+          <button v-for="a in aspectOptions" :key="a" class="cp-pop-item"
+                  :class="{ active: cpState.ar === a }"
+                  @click="setAspect(a); openPop = ''">
+            {{ a }}
+          </button>
+        </div>
+      </div>
+      <!-- 分辨率 (grok) -->
       <div v-if="resolutionOptions.length" class="cp-island">
         <div class="cp-island-label">分辨率</div>
         <div class="cp-btn-group">
@@ -154,7 +151,7 @@ function runCreation() {
                   :class="{ active: cpState.res === r }" @click="setResolution(r)">{{ r }}</button>
         </div>
       </div>
-      <!-- 时长 -->
+      <!-- 时长 (视频) -->
       <div v-if="hasDuration && durationRange" class="cp-island cp-island-grow">
         <div class="cp-island-label">时长</div>
         <div class="cp-dur-row">
@@ -173,7 +170,8 @@ function runCreation() {
 
     <!-- 提示词输入 -->
     <div class="cp-composer">
-      <div class="cp-upload-trigger" @click="($refs.fileInput as HTMLInputElement).click()"
+      <div v-if="!isMusicModel" class="cp-upload-trigger"
+           @click="($refs.fileInput as HTMLInputElement).click()"
            @dragover.prevent @drop="onFileDrop" title="上传参考素材">
         <span class="mso">add</span>
         <input ref="fileInput" type="file" multiple accept="image/*,video/*,audio/*"
@@ -190,19 +188,15 @@ function runCreation() {
             <button class="cp-file-remove" @click="removeFile(f.index)">×</button>
           </div>
         </div>
+        <!-- Suno: 标题 + 风格标签 -->
+        <div v-if="showTitleInput" class="cp-suno-row">
+          <input v-model="cpState.title" placeholder="歌曲标题" class="cp-suno-input" @blur="saveCpState()" />
+        </div>
+        <div v-if="showTagsInput" class="cp-suno-row">
+          <input v-model="cpState.tags" placeholder="风格标签 (如: pop, rock, edm)" class="cp-suno-input" @blur="saveCpState()" />
+        </div>
         <textarea v-model="cpState.prompt" rows="1" :placeholder="promptPlaceholder"
                   @blur="saveCpState()" class="cp-prompt-input" />
-        <!-- 二级输入 -->
-        <div v-if="showSecondaryInput" class="cp-secondary">
-          <textarea v-model="cpState.prompt2" rows="1" :placeholder="prompt2Placeholder"
-                    @blur="saveCpState()" class="cp-prompt-input cp-prompt2" />
-          <div v-if="showVoiceCloneTimes" class="cp-vc-times">
-            参考音频时间:
-            <input v-model="cpState.vcStart" class="cp-vc-input" @blur="saveCpState()" />
-            <span>至</span>
-            <input v-model="cpState.vcEnd" class="cp-vc-input" @blur="saveCpState()" />
-          </div>
-        </div>
       </div>
       <div class="cp-submit">
         <button class="cp-send-btn" @click="runCreation" title="生成"
@@ -299,22 +293,14 @@ function runCreation() {
   border-radius: 50%; background: var(--olive); color: #fff; border: none;
   font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
+.cp-suno-row { margin-bottom: 6px; }
+.cp-suno-input {
+  width: 100%; padding: 4px 0; border: none; border-bottom: 1px solid var(--line);
+  background: none; font-size: 13px; color: var(--ink); outline: none; font-family: inherit;
+}
 .cp-prompt-input {
   width: 100%; border: none; background: none; font-size: 13px; color: var(--ink);
   resize: none; outline: none; font-family: inherit; line-height: 1.5;
-}
-.cp-secondary {
-  margin-top: 6px; padding: 8px; background: rgba(120,120,120,.04); border-radius: 8px;
-  border: 1px solid rgba(120,120,120,.06);
-}
-.cp-prompt2 { margin-bottom: 4px; }
-.cp-vc-times {
-  display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--ink2);
-  padding-top: 6px; border-top: 1px solid rgba(120,120,120,.06);
-}
-.cp-vc-input {
-  width: 44px; padding: 3px 0; border: none; border-radius: 4px;
-  background: rgba(120,120,120,.08); color: var(--ink); text-align: center; font-size: 12px;
 }
 .cp-submit { flex-shrink: 0; }
 .cp-send-btn {

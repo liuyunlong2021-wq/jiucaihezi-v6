@@ -1,6 +1,6 @@
 /**
  * useCreation.ts — 创作面板状态管理
- * 搬迁自 code.html L19003-19200
+ * 适配精简后的 6 模型结构
  */
 import { reactive, computed } from 'vue'
 import {
@@ -10,6 +10,8 @@ import {
   getModelsForTask,
   getAspectOptions,
   getDefaultAspect,
+  getSizeOptions,
+  getDefaultSize,
   getResolutionOptions,
   getDefaultResolution,
 } from '@/data/creationModels'
@@ -28,12 +30,14 @@ export interface CpState {
   task: CreationTask
   modelKey: string
   prompt: string
-  prompt2: string
+  /** Suno: tags */
+  tags: string
+  /** Suno: title */
+  title: string
   ar: string
+  size: string
   res: string
   dur: number
-  vcStart: string
-  vcEnd: string
   files: File[]
   generating: boolean
   runningTasks: number
@@ -42,7 +46,7 @@ export interface CpState {
   results: CreationResult[]
 }
 
-const STORAGE_KEY = 'jc_cp_state_v2'
+const STORAGE_KEY = 'jc_cp_state_v3'
 
 function loadSaved(): Partial<CpState> {
   try {
@@ -55,14 +59,14 @@ const saved = loadSaved()
 
 export const cpState = reactive<CpState>({
   task: (saved.task as CreationTask) || 'text-image',
-  modelKey: saved.modelKey || 'pro',
+  modelKey: saved.modelKey || 'gpt-image-2',
   prompt: saved.prompt || '',
-  prompt2: saved.prompt2 || '',
-  ar: saved.ar || '1:1',
-  res: saved.res || '2k',
+  tags: saved.tags || '',
+  title: saved.title || '',
+  ar: saved.ar || '16:9',
+  size: saved.size || 'auto',
+  res: saved.res || '720P',
   dur: saved.dur || 5,
-  vcStart: saved.vcStart || '0:00',
-  vcEnd: saved.vcEnd || '0:11',
   files: [],
   generating: false,
   runningTasks: 0,
@@ -74,8 +78,8 @@ export const cpState = reactive<CpState>({
 // ─── 持久化 ───
 export function saveCpState() {
   try {
-    const { task, modelKey, prompt, prompt2, ar, res, dur, vcStart, vcEnd, results } = cpState
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ task, modelKey, prompt, prompt2, ar, res, dur, vcStart, vcEnd, results }))
+    const { task, modelKey, prompt, tags, title, ar, size, res, dur, results } = cpState
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ task, modelKey, prompt, tags, title, ar, size, res, dur, results }))
   } catch { /* noop */ }
 }
 
@@ -90,25 +94,34 @@ export const aspectOptions = computed(() =>
   currentModel.value ? getAspectOptions(currentModel.value, cpState.task) : []
 )
 
+export const sizeOptions = computed(() =>
+  currentModel.value ? getSizeOptions(currentModel.value) : []
+)
+
 export const resolutionOptions = computed(() =>
-  currentModel.value ? getResolutionOptions(currentModel.value, cpState.task) : []
+  currentModel.value ? getResolutionOptions(currentModel.value) : []
 )
 
 export const durationRange = computed(() => {
   const m = currentModel.value
-  if (!m || !m.dur || m.dur.length < 2) return null
-  return { min: m.dur[0], max: m.dur[m.dur.length - 1], step: m.durStep || 1 }
+  if (!m?.dur || m.dur.length < 1) return null
+  if (m.dur.length === 1) return { min: m.dur[0], max: m.dur[0], step: 1, fixed: true }
+  return { min: m.dur[0], max: m.dur[m.dur.length - 1], step: 1, fixed: false }
 })
 
-export const hasDuration = computed(() => !!durationRange.value)
+export const hasDuration = computed(() => !!durationRange.value && !durationRange.value.fixed)
+
+// 是否是图片模型
+export const isImageModel = computed(() => currentModel.value?.provider === 'newapi-image')
+// 是否是音乐模型
+export const isMusicModel = computed(() => currentModel.value?.provider === 'newapi-suno')
 
 // ─── 操作 ───
 export function switchTask(task: CreationTask) {
   cpState.task = task
-  // 确保模型在新任务下可用
   const models = getModelsForTask(task)
   if (!models.includes(cpState.modelKey)) {
-    cpState.modelKey = models[0] || 'pro'
+    cpState.modelKey = models[0] || 'gpt-image-2'
   }
   syncParams()
   saveCpState()
@@ -123,86 +136,44 @@ export function switchModel(key: string) {
 function syncParams() {
   const m = currentModel.value
   if (!m) return
-  // 同步 aspect
+  // aspect
   const ars = getAspectOptions(m, cpState.task)
-  if (ars.length && !ars.includes(cpState.ar)) {
-    cpState.ar = getDefaultAspect(m, cpState.task)
-  }
-  // 同步 resolution
-  const ress = getResolutionOptions(m, cpState.task)
-  if (ress.length && !ress.includes(cpState.res)) {
-    cpState.res = getDefaultResolution(m, cpState.task)
-  }
-  // 同步 duration
+  if (ars.length && !ars.includes(cpState.ar)) cpState.ar = getDefaultAspect(m, cpState.task)
+  // size (gpt-image-2)
+  const szs = getSizeOptions(m)
+  if (szs.length && !szs.includes(cpState.size)) cpState.size = getDefaultSize(m)
+  // resolution
+  const ress = getResolutionOptions(m)
+  if (ress.length && !ress.includes(cpState.res)) cpState.res = getDefaultResolution(m)
+  // duration
   if (m.dur && m.dur.length >= 2) {
     if (cpState.dur < m.dur[0]) cpState.dur = m.defDur || m.dur[0]
     if (cpState.dur > m.dur[m.dur.length - 1]) cpState.dur = m.defDur || m.dur[0]
   }
 }
 
-export function setAspect(ar: string) {
-  cpState.ar = ar
-  saveCpState()
-}
-
-export function setResolution(res: string) {
-  cpState.res = res
-  saveCpState()
-}
-
-export function setDuration(dur: number) {
-  cpState.dur = dur
-  saveCpState()
-}
+export function setAspect(ar: string) { cpState.ar = ar; saveCpState() }
+export function setSize(size: string) { cpState.size = size; saveCpState() }
+export function setResolution(res: string) { cpState.res = res; saveCpState() }
+export function setDuration(dur: number) { cpState.dur = dur; saveCpState() }
 
 // ─── 文件处理 ───
 export function addFiles(fileList: FileList | File[]) {
   Array.from(fileList).forEach(f => cpState.files.push(f))
 }
-
-export function removeFile(index: number) {
-  cpState.files.splice(index, 1)
-}
-
-export function clearFiles() {
-  cpState.files.splice(0)
-}
+export function removeFile(index: number) { cpState.files.splice(index, 1) }
+export function clearFiles() { cpState.files.splice(0) }
 
 // ─── 结果管理 ───
-export function addResult(r: CreationResult) {
-  cpState.results.unshift(r)
-  saveCpState()
-}
-
-export function clearResults() {
-  cpState.results.splice(0)
-  saveCpState()
-}
+export function addResult(r: CreationResult) { cpState.results.unshift(r); saveCpState() }
+export function clearResults() { cpState.results.splice(0); saveCpState() }
 
 // ─── 提示词 placeholder ───
 export const promptPlaceholder = computed(() => {
-  const m = currentModel.value
-  const t = cpState.task
-  if (t === 'character-upload') return '上传角色视频后直接点生成，无需填写提示词。'
-  if (t === 'multimodal-video') return '描述你想生成的视频内容，可结合图片、视频和音频素材。'
-  if (t === 'text-music') return '描述你想创作的音乐风格和主题，如：欢快的流行歌曲，关于夏天的回忆'
-  if (t === 'digital-human') return '描述画面内容，如：女人一边说话一边往前走 (节点20)'
-  if (t === 'text-audio') return '输入生成的文稿内容 (节点14)'
-  if (t === 'voice-clone') return '输入需要克隆输出的文字内容 (节点11)'
-  if (m?.promptOptional) return '提示词（可选）'
+  if (isMusicModel.value) return '描述你想创作的音乐风格和主题\n如：一首关于夏天回忆的流行歌曲'
+  if (cpState.task === 'image-image') return '描述你想对图片进行的修改...'
   return '描述你想生成的内容...'
 })
 
-export const prompt2Placeholder = computed(() => {
-  const t = cpState.task
-  if (t === 'digital-human') return '输入对白内容 (节点41)'
-  if (t === 'text-audio') return '输入声音特点描述 (节点15)'
-  if (t === 'voice-clone') return '输入参考音频的文字内容 (节点36)'
-  return ''
-})
-
-export const showSecondaryInput = computed(() =>
-  ['digital-human', 'text-audio', 'voice-clone'].includes(cpState.task)
-)
-
-export const showVoiceCloneTimes = computed(() => cpState.task === 'voice-clone')
+export const showTagsInput = computed(() => isMusicModel.value)
+export const showTitleInput = computed(() => isMusicModel.value)
