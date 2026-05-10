@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /**
  * ActivityRail — 左侧图标导航栏
- * 源自 code.html #activity-bar (行 48-58, 990-1043)
+ *
+ * 功能：切换第4列（右侧面板）的内容
+ * 注意：没有"对话"按钮（对话始终显示在第3列）
  */
 defineProps<{
   active: string
@@ -11,11 +13,17 @@ const emit = defineEmits<{
   (e: 'switch', mode: string): void
 }>()
 
+// Rail 按钮 — 每个切换 Col 4 的内容
 const tabs = [
-  { key: 'chat', icon: 'chat_bubble', label: '对话' },
-  { key: 'agents', icon: 'smart_toy', label: '搭子' },
-  { key: 'files', icon: 'folder', label: '文件' },
-  { key: 'brain', icon: 'psychology', label: '长脑子' },
+  { key: 'create',   icon: 'add_circle',   label: '创建搭子' },
+  { key: 'agents',   icon: 'smart_toy',    label: '搭子仓库' },
+  { key: 'brain',    icon: 'psychology',    label: '长脑子' },
+  { key: 'editor',   icon: 'edit_note',     label: '编辑区' },
+  { key: 'creation', icon: 'palette',       label: '创作面板' },
+  { key: 'storage',  icon: 'inventory_2',   label: '存储空间' },
+]
+
+const bottomTabs = [
   { key: 'settings', icon: 'settings', label: '设置' },
 ]
 </script>
@@ -30,7 +38,7 @@ const tabs = [
       </svg>
     </div>
 
-    <!-- Navigation tabs -->
+    <!-- Main tabs — 切换 Col 4 -->
     <div class="ab-tabs">
       <button
         v-for="t in tabs"
@@ -46,7 +54,19 @@ const tabs = [
 
     <div class="ab-spacer" />
 
-    <!-- Bottom: user / wallet -->
+    <!-- Bottom tabs -->
+    <button
+      v-for="t in bottomTabs"
+      :key="t.key"
+      class="ab-icon"
+      :class="{ active: active === t.key }"
+      :title="t.label"
+      @click="emit('switch', t.key)"
+    >
+      <span class="mso">{{ t.icon }}</span>
+    </button>
+
+    <!-- 充值 -->
     <a class="ab-icon" href="https://api.jiucaihezi.studio/topup" target="_blank" title="充值">
       <span class="mso">account_balance_wallet</span>
     </a>

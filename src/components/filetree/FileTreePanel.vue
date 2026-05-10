@@ -27,14 +27,16 @@ interface TreeNode {
   expanded?: boolean
 }
 
-// 动态构建搭子列表
+// 只显示用户自建搭子（内置搭子是核心竞争力，绝不外泄）
 const agentNodes = computed<TreeNode[]>(() =>
-  agentStore.agents.map(a => ({
-    id: a.id,
-    label: a.name,
-    icon: 'smart_toy',
-    type: 'agent' as const,
-  }))
+  agentStore.agents
+    .filter(a => a.source === 'user')
+    .map(a => ({
+      id: a.id,
+      label: a.name,
+      icon: 'smart_toy',
+      type: 'agent' as const,
+    }))
 )
 
 // 动态构建对话列表
