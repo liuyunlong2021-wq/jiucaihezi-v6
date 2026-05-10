@@ -19,6 +19,9 @@ import AgentEditDialog from '@/components/agents/AgentEditDialog.vue'
 import AgentWizard from '@/components/agents/AgentWizard.vue'
 import BrainPanel from '@/components/brain/BrainPanel.vue'
 import EvolutionDiff from '@/components/agents/EvolutionDiff.vue'
+import EditorPanel from '@/components/editor/EditorPanel.vue'
+import CreationPanel from '@/components/creation/CreationPanel.vue'
+import StoragePanel from '@/components/storage/StoragePanel.vue'
 import { useAgentStore } from '@/stores/agentStore'
 import type { SkillConfig } from '@/types/skill'
 
@@ -162,23 +165,14 @@ function onResizeEnd() {
         <!-- 长脑子 -->
         <BrainPanel v-else-if="rightPanel === 'brain'" @close="rightPanel = ''" />
 
-        <!-- 编辑区 — 5b-2 -->
-        <div v-else-if="rightPanel === 'editor'" class="ws-placeholder">
-          <span class="mso" style="font-size: 36px; color: var(--olive);">edit_note</span>
-          <p>正文编辑区</p><p class="ws-hint">（5b-2 迁移）</p>
-        </div>
+        <!-- 编辑区 -->
+        <EditorPanel v-else-if="rightPanel === 'editor'" />
 
-        <!-- 创作面板 — 5b-2 -->
-        <div v-else-if="rightPanel === 'creation'" class="ws-placeholder">
-          <span class="mso" style="font-size: 36px; color: var(--olive);">palette</span>
-          <p>创作面板</p><p class="ws-hint">（5b-2 迁移）</p>
-        </div>
+        <!-- 创作面板 -->
+        <CreationPanel v-else-if="rightPanel === 'creation'" />
 
-        <!-- 存储空间 — 5b-2 -->
-        <div v-else-if="rightPanel === 'storage'" class="ws-placeholder">
-          <span class="mso" style="font-size: 36px; color: var(--olive);">inventory_2</span>
-          <p>存储空间</p><p class="ws-hint">文本 · 图片 · 视频</p>
-        </div>
+        <!-- 存储空间 -->
+        <StoragePanel v-else-if="rightPanel === 'storage'" />
 
         <!-- 设置 -->
         <SettingsPanel v-else-if="rightPanel === 'settings'" />
