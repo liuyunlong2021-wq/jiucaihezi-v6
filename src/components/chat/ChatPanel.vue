@@ -3,88 +3,85 @@
  * ChatPanel — 对话面板容器
  * 源自 code.html #chat-panel (行 1094-1169)
  * 
- * 包含：ChatHeader + ChatMessages + ChatInput
- * 后续每个子组件会从 code.html 精确提取逻辑
+ * 使用 useChat composable 实现真实的 streaming 对话
  */
-import { ref } from 'vue'
+import { ref, nextTick, watch } from 'vue'
+import { useChat } from '@/composables/useChat'
+
+const { messages, isStreaming, sendMessage, stopStream } = useChat()
 
 // 当前搭子信息（后续从 agentStore 获取）
 const currentAgentName = ref('默认助手')
-const currentModel = ref('选择模型')
-const showModelMenu = ref(false)
+const currentModel = ref(localStorage.getItem('jcModel') || '选择模型')
 
-// 消息列表（后续从 chatStore 获取）
-interface Message {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: string
-  agentName?: string
-}
-
-const messages = ref<Message[]>([])
 const inputText = ref('')
-const isStreaming = ref(false)
+const messagesContainer = ref<HTMLElement | null>(null)
 
-// 发送消息（后续会接入 useChat composable）
+// 自动滚动到底部
+watch(messages, () => {
+  nextTick(() => {
+    if (messagesContainer.value) {
+      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+    }
+  })
+}, { deep: true })
+
+// 发送消息
 async function handleSend() {
   if (!inputText.value.trim() || isStreaming.value) return
-
-  const userMsg: Message = {
-    id: 'msg_' + Date.now(),
-    role: 'user',
-    content: inputText.value.trim(),
-    timestamp: new Date().toISOString()
-  }
-  messages.value.push(userMsg)
+  const text = inputText.value
   inputText.value = ''
-
-  // TODO: 调用 useChat.ts 发送到 NewAPI
-  // 占位：模拟 AI 回复
-  isStreaming.value = true
-  const aiMsg: Message = {
-    id: 'msg_' + (Date.now() + 1),
-    role: 'assistant',
-    content: '这是占位回复，后续接入 NewAPI streaming。',
-    timestamp: new Date().toISOString(),
-    agentName: currentAgentName.value
-  }
-  setTimeout(() => {
-    messages.value.push(aiMsg)
-    isStreaming.value = false
-  }, 500)
+  await sendMessage(text, {
+    agentName: currentAgentName.value,
+  })
 }
 
-// 处理键盘事件
+// 处理键盘事件 — 对应 code.html chatKeydown (行 1159)
 function onKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  // Cmd/Ctrl+Enter 发送
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault()
     handleSend()
   }
+}
+
+// textarea 自动增高 — 对应 code.html autoGrow
+function autoGrow(el: HTMLTextAreaElement) {
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 320) + 'px'
+}
+
+function handleInput(e: Event) {
+  autoGrow(e.target as HTMLTextAreaElement)
+}
+
+// 停止生成
+function handleStop() {
+  stopStream()
 }
 </script>
 
 <template>
   <div class="cp">
-    <!-- Header -->
+    <!-- Header — from code.html #chat-panel-header (行 1095-1118) -->
     <div class="cp-header">
       <div class="cp-title">
         <span class="mso" style="font-size: 17px; color: var(--olive-dark);">smart_toy</span>
         <span class="cp-name">{{ currentAgentName }}</span>
       </div>
       <div class="cp-actions">
-        <button class="cp-model-btn" @click="showModelMenu = !showModelMenu">
+        <button class="cp-model-btn" title="切换模型">
           <span class="mso" style="font-size: 14px;">deployed_code</span>
           {{ currentModel }}
         </button>
-        <button class="cp-act-btn" title="新对话">
+        <button class="cp-act-btn" title="新对话" @click="messages = []">
           <span class="mso">add</span>
         </button>
       </div>
     </div>
 
-    <!-- Messages -->
-    <div class="cp-messages" id="chat-messages">
+    <!-- Messages — from code.html #chat-messages (行 1119) -->
+    <div ref="messagesContainer" class="cp-messages">
       <!-- Welcome state -->
       <div v-if="messages.length === 0" class="cp-welcome">
         <h2 class="serif">韭菜盒子</h2>
@@ -109,12 +106,12 @@ function onKeydown(e: KeyboardEvent) {
           </span>
         </div>
         <div class="msg-bubble">
-          <div class="msg-body">{{ msg.content }}</div>
+          <div class="msg-body" v-html="msg.content.replace(/\n/g, '<br>')"></div>
         </div>
       </div>
 
       <!-- Streaming indicator -->
-      <div v-if="isStreaming" class="msg ai">
+      <div v-if="isStreaming && messages.length > 0 && !messages[messages.length - 1]?.content" class="msg assistant">
         <div class="msg-meta">
           <div class="msg-meta-avatar"><span class="mso" style="font-size: 14px;">smart_toy</span></div>
           <span class="msg-meta-name">{{ currentAgentName }}</span>
@@ -125,22 +122,32 @@ function onKeydown(e: KeyboardEvent) {
       </div>
     </div>
 
-    <!-- Input -->
+    <!-- Input — from code.html #chat-input-area (行 1126-1168) -->
     <div class="cp-input-area">
       <div class="cp-input-wrap">
         <textarea
           v-model="inputText"
-          placeholder="输入消息..."
+          placeholder="给搭子发指令... (Cmd/Ctrl+Enter发送)"
           rows="1"
           @keydown="onKeydown"
+          @input="handleInput"
         />
         <div class="cp-input-actions">
           <button class="ci-btn" title="附件">
             <span class="mso">attach_file</span>
           </button>
           <button
+            v-if="isStreaming"
+            class="cp-stop"
+            @click="handleStop"
+            title="停止生成"
+          >
+            <span class="mso">stop</span>
+          </button>
+          <button
+            v-else
             class="cp-send"
-            :disabled="!inputText.trim() || isStreaming"
+            :disabled="!inputText.trim()"
             @click="handleSend"
           >
             <span class="mso">send</span>
@@ -158,6 +165,7 @@ function onKeydown(e: KeyboardEvent) {
   height: 100%;
   background: var(--surface);
   position: relative;
+  width: 100%;
 }
 
 /* Header — from code.html line 208-219 */
@@ -270,7 +278,9 @@ function onKeydown(e: KeyboardEvent) {
   padding: 10px 14px;
   border-radius: 14px;
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.7;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 .msg.user .msg-bubble {
   background: var(--jc-surface-container-low);
@@ -284,6 +294,7 @@ function onKeydown(e: KeyboardEvent) {
   border: 1px solid var(--border);
   border-bottom-left-radius: 4px;
 }
+.msg-body { white-space: pre-wrap; }
 
 /* Welcome */
 .cp-welcome {
@@ -346,7 +357,7 @@ function onKeydown(e: KeyboardEvent) {
   outline: none;
   resize: none;
   max-height: 320px;
-  min-height: 40px;
+  min-height: 24px;
   line-height: 1.6;
 }
 .cp-input-actions {
@@ -371,13 +382,11 @@ function onKeydown(e: KeyboardEvent) {
   background: var(--olive-pale);
   color: var(--olive-dark);
 }
-.cp-send {
+.cp-send, .cp-stop {
   height: 36px;
   min-width: 36px;
   border: none;
   border-radius: 20px;
-  background: var(--olive);
-  color: #fff;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -385,6 +394,15 @@ function onKeydown(e: KeyboardEvent) {
   padding: 0 12px;
   transition: transform 0.1s;
 }
+.cp-send {
+  background: var(--olive);
+  color: #fff;
+}
 .cp-send:hover { transform: scale(1.05); }
 .cp-send:disabled { opacity: 0.4; cursor: default; transform: none; }
+.cp-stop {
+  background: var(--jc-error);
+  color: #fff;
+}
+.cp-stop:hover { transform: scale(1.05); }
 </style>
