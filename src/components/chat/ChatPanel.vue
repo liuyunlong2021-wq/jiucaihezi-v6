@@ -47,6 +47,20 @@ watch(messages, () => {
   })
 }, { deep: true })
 
+// ★ 切换对话时加载历史消息
+watch(() => sessionStore.activeSessionId, async (newId) => {
+  if (!newId) {
+    // 新对话
+    clearMessages()
+    currentSessionId = ''
+    return
+  }
+  if (newId === currentSessionId) return
+  currentSessionId = newId
+  const history = await sessionStore.loadSessionMessages(newId)
+  loadMessages(history)
+})
+
 // 发送消息 + 自动保存 + superpowers 路由 + karpathy-wiki 自动收集
 async function handleSend() {
   if (!inputText.value.trim() || isStreaming.value) return
