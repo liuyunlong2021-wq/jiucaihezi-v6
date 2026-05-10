@@ -15,14 +15,7 @@ const T8_BASE = 'https://api.jiucaihezi.studio'
 const SD2_BASE = 'https://sd2.mengfactory.cn'
 
 function getApiKey(): string {
-  try {
-    const raw = localStorage.getItem('jc_settings')
-    if (raw) {
-      const s = JSON.parse(raw)
-      return s.apiKey || ''
-    }
-  } catch { /* noop */ }
-  return ''
+  return localStorage.getItem('jcApiKey') || ''
 }
 
 function headers(base: 'T8' | 'SD2' = 'T8'): Record<string, string> {

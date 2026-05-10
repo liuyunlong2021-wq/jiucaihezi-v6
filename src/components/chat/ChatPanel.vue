@@ -21,6 +21,13 @@ const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const showModelMenu = ref(false)
 
+// 学习开关 — 开启后调用 karpathy-llm-wiki 持续摄入对话
+const learningEnabled = ref(false)
+function toggleLearning() {
+  learningEnabled.value = !learningEnabled.value
+  localStorage.setItem('jc_learning', String(learningEnabled.value))
+}
+
 // 当前搭子名称 (响应式)
 const currentAgentName = computed(() =>
   agentStore.currentAgent?.name || '直接对话'
@@ -148,6 +155,11 @@ onMounted(() => {
             </button>
           </div>
         </div>
+        <button class="cp-act-btn cp-learn-btn" :class="{ on: learningEnabled }"
+                title="学习模式（自动摄入对话到知识库）" @click="toggleLearning">
+          <span class="mso" style="font-size: 15px;">school</span>
+          <span class="cp-learn-label">学习</span>
+        </button>
         <button class="cp-act-btn" title="新对话" @click="startNew">
           <span class="mso">add</span>
         </button>
@@ -542,4 +554,16 @@ onMounted(() => {
   background: rgba(213, 199, 135, 0.18);
   color: var(--olive-dark);
 }
+
+/* 学习开关 */
+.cp-learn-btn {
+  display: flex; align-items: center; gap: 3px;
+  padding: 4px 8px; border-radius: 16px;
+  border: 1px solid var(--border); background: var(--surface-alt);
+  transition: all .2s;
+}
+.cp-learn-btn.on {
+  background: var(--olive); border-color: var(--olive); color: #fff;
+}
+.cp-learn-label { font-size: 10px; font-weight: 700; }
 </style>

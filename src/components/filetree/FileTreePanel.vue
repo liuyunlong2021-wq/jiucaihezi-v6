@@ -1,13 +1,8 @@
 <script setup lang="ts">
 /**
- * FileTreePanel — 全局文件树底座
- * 源自 code.html #folder-col (行 1044-1077) + #sidebar (行 1060-1067)
- * 
- * 文件树是全局的底座，所有内容都在这里：
- * - 搭子列表 (from agentStore)
- * - 对话记录 (from sessionStore)
- * - 知识库文件
- * - 创作作品
+ * FileTreePanel — 搭子列表 + 牛马开关
+ * Col 2: 仅显示用户自建搭子
+ * 牛马开关 = superpower 路由
  */
 import { ref, computed, onMounted } from 'vue'
 import { useAgentStore } from '@/stores/agentStore'
@@ -17,6 +12,19 @@ const agentStore = useAgentStore()
 const sessionStore = useSessionStore()
 
 const searchQuery = ref('')
+
+// 牛马开关（superpower 路由）
+const niuMaEnabled = ref(false)
+
+onMounted(() => {
+  niuMaEnabled.value = localStorage.getItem('jc_niuma') === 'true'
+  sessionStore.loadAllSessions()
+})
+
+function toggleNiuMa() {
+  niuMaEnabled.value = !niuMaEnabled.value
+  localStorage.setItem('jc_niuma', String(niuMaEnabled.value))
+}
 
 interface TreeNode {
   id: string
@@ -39,16 +47,6 @@ const agentNodes = computed<TreeNode[]>(() =>
     }))
 )
 
-// 动态构建对话列表
-const sessionNodes = computed<TreeNode[]>(() =>
-  sessionStore.sessions.slice(0, 20).map(s => ({
-    id: s.id,
-    label: s.title || '无主题对话',
-    icon: 'chat_bubble',
-    type: 'session' as const,
-  }))
-)
-
 const tree = ref<TreeNode[]>([
   {
     id: 'agents', label: '我的搭子', icon: 'smart_toy',
@@ -56,217 +54,114 @@ const tree = ref<TreeNode[]>([
   },
 ])
 
-// 获取动态子节点
 function getChildren(node: TreeNode): TreeNode[] {
   if (node.id === 'agents') return agentNodes.value
   return node.children || []
 }
 
 function toggleFolder(node: TreeNode) {
-  if (node.type === 'folder') {
-    node.expanded = !node.expanded
-  }
+  if (node.type === 'folder') node.expanded = !node.expanded
 }
 
-// 点击搭子 → 切换搭子（行 4741）
 function handleNodeClick(node: TreeNode) {
-  if (node.type === 'agent') {
-    agentStore.selectAgent(node.id)
-  }
+  if (node.type === 'agent') agentStore.selectAgent(node.id)
 }
-
-onMounted(() => {
-  sessionStore.loadAllSessions()
-})
 </script>
 
 <template>
   <div class="ft">
     <!-- Header -->
     <div class="ft-header">
-      <span class="ft-title">文件</span>
-      <button class="ft-action" title="新建">
-        <span class="mso" style="font-size: 15px;">add</span>
+      <span class="ft-title">搭子</span>
+      <button
+        class="ft-niuma-toggle"
+        :class="{ on: niuMaEnabled }"
+        @click="toggleNiuMa"
+        title="牛马模式（自动路由搭子）"
+      >
+        <span class="ft-niuma-dot"></span>
+        <span class="ft-niuma-label">牛马</span>
       </button>
     </div>
 
     <!-- Search -->
     <div class="ft-search">
       <span class="mso" style="font-size: 15px;">search</span>
-      <input
-        v-model="searchQuery"
-        placeholder="搜索..."
-        type="text"
-      />
+      <input v-model="searchQuery" placeholder="搜索..." type="text" />
     </div>
 
     <!-- Tree -->
     <div class="ft-tree">
-      <div
-        v-for="node in tree"
-        :key="node.id"
-        class="ft-node"
-      >
-        <!-- Folder header -->
-        <div
-          class="ft-item"
-          :class="{ 'is-folder': node.type === 'folder' }"
-          @click="toggleFolder(node)"
-        >
-          <span
-            v-if="node.type === 'folder'"
-            class="mso ft-twisty"
-            :style="{ transform: node.expanded ? 'rotate(90deg)' : 'rotate(0)' }"
-          >chevron_right</span>
+      <div v-for="node in tree" :key="node.id" class="ft-node">
+        <div class="ft-item" :class="{ 'is-folder': node.type === 'folder' }" @click="toggleFolder(node)">
+          <span v-if="node.type === 'folder'" class="mso ft-twisty"
+                :style="{ transform: node.expanded ? 'rotate(90deg)' : 'rotate(0)' }">chevron_right</span>
           <span class="mso ft-icon">{{ node.icon }}</span>
           <span class="ft-label">{{ node.label }}</span>
           <span v-if="getChildren(node).length" class="ft-badge">{{ getChildren(node).length }}</span>
         </div>
 
-        <!-- Children (dynamic) -->
         <div v-if="node.expanded && getChildren(node).length" class="ft-children">
-          <div
-            v-for="child in getChildren(node)"
-            :key="child.id"
-            class="ft-item ft-child"
-            :class="{ active: child.type === 'agent' && agentStore.currentAgent?.id === child.id }"
-            @click="handleNodeClick(child)"
-          >
+          <div v-for="child in getChildren(node)" :key="child.id" class="ft-item ft-child"
+               :class="{ active: child.type === 'agent' && agentStore.currentAgent?.id === child.id }"
+               @click="handleNodeClick(child)">
             <span class="mso ft-icon">{{ child.icon }}</span>
             <span class="ft-label">{{ child.label }}</span>
           </div>
         </div>
 
-        <!-- Empty state -->
-        <div v-if="node.expanded && !getChildren(node).length" class="ft-empty">
-          暂无内容
-        </div>
+        <div v-if="node.expanded && !getChildren(node).length" class="ft-empty">暂无内容</div>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.ft {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-  background: var(--surface-alt);
-}
+.ft { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--surface-alt); }
 .ft-header {
   padding: 12px 12px 8px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink3);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between;
 }
-.ft-title { flex: 1; }
-.ft-action {
-  width: 24px; height: 24px;
-  border: none; background: none;
-  border-radius: 6px;
-  color: var(--ink3);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
+.ft-title { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink3); flex: 1; }
+
+/* 牛马开关 */
+.ft-niuma-toggle {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 8px 3px 4px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--surface);
+  cursor: pointer; font-family: inherit; font-size: 10px; font-weight: 700;
+  color: var(--ink3); transition: all .2s;
 }
-.ft-action:hover {
-  background: var(--olive-pale);
-  color: var(--olive-dark);
+.ft-niuma-toggle:hover { border-color: var(--olive); }
+.ft-niuma-toggle.on { background: var(--olive); border-color: var(--olive); color: #fff; }
+.ft-niuma-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--ink3); opacity: .3; transition: all .2s;
 }
-.ft-search {
-  padding: 4px 10px 8px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.ft-search .mso {
-  color: var(--ink3);
-  flex-shrink: 0;
-}
+.ft-niuma-toggle.on .ft-niuma-dot { background: #fff; opacity: 1; }
+.ft-niuma-label { line-height: 1; }
+
+.ft-search { padding: 4px 10px 8px; display: flex; align-items: center; gap: 6px; }
+.ft-search .mso { color: var(--ink3); flex-shrink: 0; }
 .ft-search input {
-  width: 100%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  border-radius: 8px;
-  padding: 6px 8px;
-  font-size: 12px;
-  color: var(--ink);
-  outline: none;
-  font-family: inherit;
+  width: 100%; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 8px; padding: 6px 8px; font-size: 12px; color: var(--ink); outline: none; font-family: inherit;
 }
-.ft-search input:focus {
-  border-color: var(--olive);
-}
-.ft-tree {
-  flex: 1;
-  overflow-y: auto;
-  padding: 4px 0 60px;
-}
+.ft-search input:focus { border-color: var(--olive); }
+.ft-tree { flex: 1; overflow-y: auto; padding: 4px 0 60px; }
 .ft-item {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--ink2);
-  cursor: pointer;
-  transition: all 0.12s;
-  border-left: 2px solid transparent;
-  user-select: none;
+  display: flex; align-items: center; gap: 7px; padding: 8px 12px;
+  font-size: 12px; color: var(--ink2); cursor: pointer; transition: all 0.12s;
+  border-left: 2px solid transparent; user-select: none;
 }
-.ft-item:hover {
-  background: var(--olive-pale);
-  color: var(--ink);
-}
-.ft-item.active {
-  background: rgba(213, 199, 135, 0.15);
-  color: var(--olive-dark);
-  border-left-color: var(--olive);
-}
-.ft-twisty {
-  font-size: 14px !important;
-  color: var(--ink3);
-  transition: transform 0.15s;
-  flex-shrink: 0;
-  width: 14px;
-}
-.ft-icon {
-  font-size: 16px;
-  flex-shrink: 0;
-  color: var(--ink3);
-}
-.ft-item.active .ft-icon,
-.ft-item:hover .ft-icon {
-  color: var(--olive);
-}
-.ft-label {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ft-badge {
-  font-size: 10px;
-  color: var(--olive-dark);
-  background: rgba(213, 199, 135, 0.12);
-  padding: 2px 6px;
-  border-radius: 999px;
-}
-.ft-child {
-  padding-left: 36px;
-}
-.ft-children {
-  display: block;
-}
-.ft-empty {
-  padding: 8px 12px 8px 36px;
-  font-size: 11px;
-  color: var(--ink3);
-  font-style: italic;
-}
+.ft-item:hover { background: var(--olive-pale); color: var(--ink); }
+.ft-item.active { background: rgba(213, 199, 135, 0.15); color: var(--olive-dark); border-left-color: var(--olive); }
+.ft-twisty { font-size: 14px !important; color: var(--ink3); transition: transform 0.15s; flex-shrink: 0; width: 14px; }
+.ft-icon { font-size: 16px; flex-shrink: 0; color: var(--ink3); }
+.ft-item.active .ft-icon, .ft-item:hover .ft-icon { color: var(--olive); }
+.ft-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ft-badge { font-size: 10px; color: var(--olive-dark); background: rgba(213, 199, 135, 0.12); padding: 2px 6px; border-radius: 999px; }
+.ft-child { padding-left: 36px; }
+.ft-children { display: block; }
+.ft-empty { padding: 8px 12px 8px 36px; font-size: 11px; color: var(--ink3); font-style: italic; }
 </style>

@@ -46,117 +46,171 @@ const SKILL_PRESETS: SkillConfig[] = [
     id: 'guide', name: '新手指导',
     description: '当用户初次使用韭菜盒子，或对功能有疑问时自动激活。引导新用户快速上手所有功能。',
     triggers: ['怎么用', '帮助', '教程', '不会', '新手'],
-    skillContent: `## 角色定义
-你是「新手指导」— 韭菜盒子 AI 工作站的专属向导搭子。
-
-## 工作流程
-1. 识别用户的困惑点
-2. 用最简单直白的语言解释功能
-3. 给出具体操作步骤（第一步、第二步……）
-4. 确认用户是否理解
-
-## 输出格式
-- 用数字编号列出步骤
-- 每步不超过一句话
-- 关键按钮用【】标注
-
-## 示例
-用户：怎么创建搭子？
-回答：
-1. 点击左侧【搭子】图标
-2. 点击【+ 创建搭子】按钮
-3. 按照引导填写信息
-4. 点击【保存】完成`,
-    references: [],
-    examples: ['欢迎来到韭菜盒子！有任何问题随时问我。'],
+    skillContent: `## 角色定义\n你是「新手指导」— 韭菜盒子 AI 工作站的专属向导搭子。\n\n## 工作流程\n1. 识别用户的困惑点\n2. 用最简单直白的语言解释功能\n3. 给出具体操作步骤\n4. 确认用户是否理解\n\n## 输出格式\n- 用数字编号列出步骤\n- 每步不超过一句话\n- 关键按钮用【】标注`,
+    references: [], examples: ['欢迎来到韭菜盒子！有任何问题随时问我。'],
     version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
   },
   {
     id: 'manhua', name: '漫剧剧本',
     description: '当用户想创作漫剧、短剧、分镜剧本时自动激活。从灵感碎片生成完整剧本。',
     triggers: ['漫剧', '剧本', '分镜', '短剧', '故事'],
-    skillContent: `## 角色定义
-你是「漫剧剧本」创作搭子，擅长将灵感碎片转化为结构化的漫剧剧本。
-
-## 工作流程
-1. 收集用户灵感（角色/场景/情绪/一句话都行）
-2. 提炼核心冲突和情感线
-3. 生成分镜大纲（每个分镜含：画面描述 + 台词 + 镜头指示）
-4. 迭代优化
-
-## 输出格式
-- 标题行
-- 每个分镜编号 + 画面 + 台词 + 镜头
-- 情绪标注
-
-## 参考资料
-- 短剧平台内容规范
-- 分镜脚本标准格式`,
-    references: [],
-    examples: ['**「漫剧剧本」创作空间** 已就绪 ✨\n\n把你脑海里的灵感碎片告诉我——一个角色、一个场景、一句话、甚至一个模糊的感觉都行。'],
-    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
-  },
-  {
-    id: 'make_000', name: '漫剧提示词',
-    description: '当用户需要生成短剧制作的提示词、素材指令时自动激活。AI短剧制作流水线的总调度。',
-    triggers: ['提示词', '制作', '素材', '指令'],
-    skillContent: `## 角色定义
-你是「制作总监」，AI 短剧制作流水线的总调度与面对用户的唯一总客服。
-
-## 工作流程
-1. 理解用户的制作需求
-2. 分解为具体的提示词指令
-3. 按照制作流程排序输出
-4. 提供调参建议
-
-## 输出格式
-- 每条提示词独立编号
-- 标注用途（文生图/图生图/生视频）
-- 附带参数建议`,
-    references: [],
-    examples: [],
+    skillContent: `## 角色定义\n你是「漫剧剧本」创作搭子，擅长将灵感碎片转化为结构化的漫剧剧本。\n\n## 工作流程\n1. 收集用户灵感\n2. 提炼核心冲突和情感线\n3. 生成分镜大纲\n4. 迭代优化\n\n## 输出格式\n- 标题行\n- 每个分镜编号 + 画面 + 台词 + 镜头\n- 情绪标注`,
+    references: [], examples: [],
     version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
   },
   {
     id: 'ppt_designer', name: 'PPT 设计师',
     description: '当用户需要制作PPT、设计演示文稿内容和素材时自动激活。',
     triggers: ['PPT', 'ppt', '演示', '幻灯片', '汇报'],
-    skillContent: `## 角色定义
-你是「PPT 设计师」，韭菜盒子里专门负责 PPT 内容设计和素材设计的搭子。
-
-## 工作流程
-1. 了解PPT主题和用途
-2. 设计内容大纲（每页标题+要点）
-3. 建议配色和版式方案
-4. 逐页输出内容
-
-## 输出格式
-- 每页标题 + 3-5个要点
-- 配图建议
-- 演讲备注`,
-    references: [],
-    examples: [],
+    skillContent: `## 角色定义\n你是「PPT 设计师」，负责PPT内容设计和素材设计。\n\n## 工作流程\n1. 了解主题和用途\n2. 设计内容大纲\n3. 建议配色和版式\n4. 逐页输出内容\n\n## 输出格式\n- 每页标题 + 3-5个要点\n- 配图建议\n- 演讲备注`,
+    references: [], examples: [],
     version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
   },
   {
     id: 'write_000', name: '写作',
     description: '当用户需要写文章、小说、文案等文字创作时自动激活。',
     triggers: ['写作', '文章', '小说', '文案', '写'],
-    skillContent: `## 角色定义
-你是「写作总管」，小说与文字创作流水线的总调度。
+    skillContent: `## 角色定义\n你是「写作总管」，小说与文字创作流水线的总调度。\n\n## 工作流程\n1. 了解写作类型和目标读者\n2. 确定风格、调性、篇幅\n3. 生成大纲或直接创作\n4. 迭代修改`,
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
 
-## 工作流程
-1. 了解写作类型和目标读者
-2. 确定风格、调性、篇幅
-3. 生成大纲或直接创作
-4. 迭代修改
+  // ═══ 以下 17 个 Skill 来自 /skills/ 目录 ═══
 
-## 输出格式
-- 根据体裁自动调整格式
-- 小说类分章节
-- 文案类含标题+正文+标签`,
-    references: [],
-    examples: [],
+  {
+    id: 'film-type-analysis', name: '影片风格分析师',
+    description: '分析剧本确定视觉风格、画面比例与叙事节奏',
+    triggers: ['风格', '分析', '类型', '比例', '节奏'],
+    skillContent: 'skill://skills/film-type-analysis/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'film-character-asset', name: '角色设定师',
+    description: '从剧本提取角色资产控制表与制作手册',
+    triggers: ['角色', '人设', '立绘', '角色表'],
+    skillContent: 'skill://skills/film-character-asset/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'film-scene-asset', name: '场景设定师',
+    description: '设计可复用的空镜主场景资产规格',
+    triggers: ['场景', '空镜', '环境', '背景'],
+    skillContent: 'skill://skills/film-scene-asset/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'film-prop-asset', name: '道具设定师',
+    description: '拆解剧本道具为精确可生图的资产规格',
+    triggers: ['道具', '物件', '细节', '物品'],
+    skillContent: 'skill://skills/film-prop-asset/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'film-engineering-book', name: '素材工程师',
+    description: '将剧本转化为镜头级可复用素材单元',
+    triggers: ['工程', '拆解', '素材', '工程书'],
+    skillContent: 'skill://skills/film-engineering-book/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'film-shot-design', name: '分镜设计师',
+    description: '将工程素材编排成可执行的分镜表',
+    triggers: ['分镜', '镜头', '运镜', '分镜表'],
+    skillContent: 'skill://skills/film-shot-design/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'banana-character-prompt', name: '角色提示词生成',
+    description: '将角色设定转为 Banana 生图 JSON 提示词',
+    triggers: ['Banana', '角色提示词', '角色生图'],
+    skillContent: 'skill://skills/banana-character-prompt/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'banana-scene-prompt', name: '场景提示词生成',
+    description: '将场景设定转为 Banana 生图提示词',
+    triggers: ['场景提示词', '场景生图', 'Banana场景'],
+    skillContent: 'skill://skills/banana-scene-prompt/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'banana-prop-prompt', name: '道具提示词生成',
+    description: '将道具设定转为 Banana 生图提示词',
+    triggers: ['道具提示词', '道具生图', 'Banana道具'],
+    skillContent: 'skill://skills/banana-prop-prompt/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'banana-grid-shot-prompt', name: '分镜板提示词',
+    description: '将分镜转为 3×3 格子分镜板提示词',
+    triggers: ['分镜板', '3x3', 'grid', '网格分镜'],
+    skillContent: 'skill://skills/banana-grid-shot-prompt/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'banana-storyboard-edit-prompt', name: '分镜修图提示词',
+    description: '针对单帧分镜板的精修编辑提示词',
+    triggers: ['修图', '分镜修复', '编辑分镜', '精修'],
+    skillContent: 'skill://skills/banana-storyboard-edit-prompt/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'grok-video-prompt', name: 'Grok 视频提示词',
+    description: '将分镜转为 Grok 视频时间线格式',
+    triggers: ['Grok', 'Grok视频', '视频提示词'],
+    skillContent: 'skill://skills/grok-video-prompt/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'veo-video-prompt', name: 'Veo 视频提示词',
+    description: '将分镜转为 Veo 兼容生视频提示词',
+    triggers: ['Veo', 'Veo视频', '视频生成'],
+    skillContent: 'skill://skills/veo-video-prompt/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'ltx-video-action', name: 'LTX 视频提示词',
+    description: '将分镜转为 LTX 2.3 图生视频提示词',
+    triggers: ['LTX', '动作视频', 'LTX视频'],
+    skillContent: 'skill://skills/ltx-video-action/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'video-composer', name: '视频合成工具',
+    description: '拼接视频片段并添加字幕',
+    triggers: ['合成', '拼接', '字幕', '剪辑'],
+    skillContent: 'skill://skills/video-composer/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'voice-bound-shot-video', name: '配音绑定镜头',
+    description: '用音频驱动单镜头对白视频生成',
+    triggers: ['配音', '对白', '声音镜头', '音频驱动'],
+    skillContent: 'skill://skills/voice-bound-shot-video/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'qwen-tts-voice-design', name: '声音设计师',
+    description: '为角色设计 Qwen TTS 语音提示词',
+    triggers: ['TTS', '声音', '语音', '配音设计'],
+    skillContent: 'skill://skills/qwen-tts-voice-design/SKILL.md',
+    references: [], examples: [],
     version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
   },
 ]

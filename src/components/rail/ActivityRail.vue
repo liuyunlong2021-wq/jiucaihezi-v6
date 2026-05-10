@@ -2,8 +2,8 @@
 /**
  * ActivityRail — 左侧图标导航栏
  *
- * 功能：切换第4列（右侧面板）的内容
- * 注意：没有"对话"按钮（对话始终显示在第3列）
+ * 功能：切换第5列（右侧面板）的内容
+ * 注意：没有"对话"按钮（对话始终显示在第4列）
  */
 defineProps<{
   active: string
@@ -13,13 +13,13 @@ const emit = defineEmits<{
   (e: 'switch', mode: string): void
 }>()
 
-// Rail 按钮 — 每个切换 Col 4 的内容
+// Rail 按钮 — 每个切换 Col 5 的内容
 const tabs = [
-  { key: 'create',   icon: 'add_circle',   label: '创建搭子' },
-  { key: 'agents',   icon: 'smart_toy',    label: '搭子仓库' },
+  { key: 'create',   emoji: '🐂', label: '创建搭子' },
+  { key: 'agents',   emoji: '🐴', label: '搭子仓库' },
   { key: 'brain',    icon: 'psychology',    label: '长脑子' },
   { key: 'editor',   icon: 'edit_note',     label: '编辑区' },
-  { key: 'creation', icon: 'palette',       label: '创作面板' },
+  { key: 'creation', icon: 'photo_camera',  label: '创作面板' },
   { key: 'storage',  icon: 'inventory_2',   label: '存储空间' },
 ]
 
@@ -38,7 +38,7 @@ const bottomTabs = [
       </svg>
     </div>
 
-    <!-- Main tabs — 切换 Col 4 -->
+    <!-- Main tabs — 切换 Col 5 -->
     <div class="ab-tabs">
       <button
         v-for="t in tabs"
@@ -48,7 +48,8 @@ const bottomTabs = [
         :title="t.label"
         @click="emit('switch', t.key)"
       >
-        <span class="mso">{{ t.icon }}</span>
+        <span v-if="t.emoji" class="ab-emoji">{{ t.emoji }}</span>
+        <span v-else class="mso">{{ t.icon }}</span>
       </button>
     </div>
 
@@ -65,11 +66,6 @@ const bottomTabs = [
     >
       <span class="mso">{{ t.icon }}</span>
     </button>
-
-    <!-- 充值 -->
-    <a class="ab-icon" href="https://api.jiucaihezi.studio/topup" target="_blank" title="充值">
-      <span class="mso">account_balance_wallet</span>
-    </a>
   </div>
 </template>
 
@@ -122,6 +118,10 @@ const bottomTabs = [
 .ab-icon.active {
   background: rgba(213, 199, 135, 0.15);
   color: var(--olive-dark);
+}
+.ab-emoji {
+  font-size: 20px;
+  line-height: 1;
 }
 .ab-spacer { flex: 1; }
 </style>

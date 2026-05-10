@@ -241,9 +241,10 @@ const modelList = computed(() =>
 .cp-island-label { font-size: 10px; color: var(--ink3); margin-bottom: 2px; }
 .cp-island-val { font-size: 12px; font-weight: 600; color: var(--ink1); }
 .cp-popover {
-  position: absolute; top: 100%; left: 0; z-index: 20;
+  position: absolute; bottom: 100%; left: 0; z-index: 20;
   background: var(--paper); border: 1px solid var(--line); border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(0,0,0,.1); padding: 4px; min-width: 140px; max-height: 300px; overflow-y: auto;
+  box-shadow: 0 -4px 16px rgba(0,0,0,.1); padding: 4px; min-width: 140px; max-height: 300px; overflow-y: auto;
+  margin-bottom: 4px;
 }
 .cp-pop-item {
   display: block; width: 100%; padding: 8px 12px; border: none; background: none;

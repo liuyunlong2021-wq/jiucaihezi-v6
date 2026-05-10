@@ -66,6 +66,20 @@ function formatDate(ts: number) {
   if (!ts) return '从未整理'
   return new Date(ts).toLocaleDateString('zh-CN')
 }
+
+// ─── 反哺：darwin-skill 对照 wiki 升级搭子 ───
+async function startFanbu() {
+  const confirmed = confirm('将使用 darwin-skill 对照知识库内容升级所有搭子，确认？')
+  if (!confirmed) return
+  viewMode.value = 'processing'
+  // TODO: 调用 darwin-skill API (https://github.com/alchaincyf/darwin-skill)
+  // 1. 读取 wiki/ 目录内容
+  // 2. 对照每个搭子的 SKILL.md
+  // 3. 使用 LLM 生成升级补丁
+  // 4. 应用补丁
+  await runBrainCompilation(store.agents)
+  viewMode.value = 'result'
+}
 </script>
 
 <template>
@@ -125,10 +139,13 @@ function formatDate(ts: number) {
       <!-- 操作按钮（搬运自 dazi L1788-1789） -->
       <div class="brain-action-row">
         <button class="brain-primary-btn" @click="startBrainRun">
-          <span class="mso">play_arrow</span>开始整理
+          <span class="mso">play_arrow</span>整理
+        </button>
+        <button class="brain-primary-btn brain-fb-btn" @click="startFanbu" title="将知识库内容对照搭子进行升级（darwin-skill）">
+          <span class="mso">auto_fix_high</span>反哺
         </button>
         <button class="brain-secondary-btn" @click="viewMode = 'result'" v-if="suggestions.length > 0">
-          <span class="mso">history</span>查看上次结果
+          <span class="mso">history</span>上次结果
         </button>
       </div>
     </div>
@@ -339,4 +356,6 @@ function formatDate(ts: number) {
   background: var(--paper); color: var(--ink2);
   font-size: 13px; cursor: pointer; font-family: inherit;
 }
+.brain-fb-btn { background: #e67e22; }
+.brain-fb-btn:hover { background: #d35400; }
 </style>
