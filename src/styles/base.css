@@ -1,5 +1,13 @@
 /* 韭菜盒子 · 全局基础样式 */
-@import url('https://fonts.loli.net/css2?family=Noto+Serif+SC:wght@400;500;700&family=Inter:wght@300;400;500;600&display=swap');
+
+/* Inter — 本地字体（离线可用） */
+@font-face { font-family: 'Inter'; font-weight: 300; font-display: swap; src: url('/fonts/inter-300.ttf') format('truetype'); }
+@font-face { font-family: 'Inter'; font-weight: 400; font-display: swap; src: url('/fonts/inter-400.ttf') format('truetype'); }
+@font-face { font-family: 'Inter'; font-weight: 500; font-display: swap; src: url('/fonts/inter-500.ttf') format('truetype'); }
+@font-face { font-family: 'Inter'; font-weight: 600; font-display: swap; src: url('/fonts/inter-600.ttf') format('truetype'); }
+
+/* Noto Serif SC + Material Symbols — CDN（中文字体太大不宜打包） */
+@import url('https://fonts.loli.net/css2?family=Noto+Serif+SC:wght@400;500;700&display=swap');
 @import url('https://fonts.loli.net/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

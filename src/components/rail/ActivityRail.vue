@@ -54,6 +54,11 @@ const bottomTabs = [
 
     <div class="ab-spacer" />
 
+    <!-- Key 按钮 -->
+    <a class="ab-icon ab-key-btn" href="https://api.jiucaihezi.studio/keys" target="_blank" title="获取 API Key">
+      <span class="ab-key-text">Key</span>
+    </a>
+
     <!-- Bottom tabs -->
     <button
       v-for="t in bottomTabs"
@@ -119,4 +124,14 @@ const bottomTabs = [
   color: var(--olive-dark);
 }
 .ab-spacer { flex: 1; }
+.ab-key-btn {
+  width: 32px; height: 32px; border-radius: 50%;
+  border: 1.5px solid var(--olive); display: flex;
+  align-items: center; justify-content: center; margin-bottom: 4px;
+}
+.ab-key-btn:hover { background: var(--olive-pale); }
+.ab-key-text {
+  font-size: 9px; font-weight: 800; color: var(--olive-dark);
+  letter-spacing: -0.02em; line-height: 1;
+}
 </style>

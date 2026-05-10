@@ -26,12 +26,29 @@ onMounted(() => {
   applyBigFont()
 })
 
-function saveSettings() {
+const saveStatus = ref('')
+
+async function saveSettings() {
   const key = apiKey.value.trim()
-  if (key) localStorage.setItem('jcApiKey', key)
+  if (!key) { saveStatus.value = '❌ 请填写 API Key'; return }
+
+  localStorage.setItem('jcApiKey', key)
   localStorage.setItem('jcApiBase', API_BASE)
-  saved.value = true
-  setTimeout(() => { saved.value = false }, 2000)
+  saveStatus.value = '🔄 验证中...'
+
+  try {
+    const resp = await fetch(`${API_BASE}/v1/models`, {
+      headers: { 'Authorization': `Bearer ${key}` },
+    })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    const count = data?.data?.length || 0
+    saveStatus.value = `✅ 连接成功，识别出 ${count} 个模型`
+    saved.value = true
+  } catch (e: any) {
+    saveStatus.value = `❌ 连接失败: ${e.message}`
+  }
+  setTimeout(() => { saveStatus.value = ''; saved.value = false }, 5000)
 }
 
 function getKeyLink() { window.open('https://api.jiucaihezi.studio/keys', '_blank') }
@@ -101,6 +118,9 @@ const themeOptions = [
           <span class="mso" style="font-size: 16px;">{{ saved ? 'check' : 'save' }}</span>
           {{ saved ? '已保存' : '保存设置' }}
         </button>
+        <div v-if="saveStatus" class="sp-status" :class="{ ok: saveStatus.startsWith('✅'), err: saveStatus.startsWith('❌') }">
+          {{ saveStatus }}
+        </div>
       </div>
 
       <!-- 外观 -->
@@ -189,4 +209,11 @@ const themeOptions = [
 .sp-bigfont-btn:hover { border-color: var(--olive); background: var(--olive-pale); }
 .sp-bigfont-btn.on { background: rgba(213, 199, 135, 0.18); border-color: var(--olive); color: var(--olive-dark); }
 .sp-version { text-align: center; font-size: 11px; color: var(--ink3); padding: 24px 0; letter-spacing: 0.03em; }
+.sp-status {
+  margin-top: 8px; padding: 8px 12px; border-radius: 8px;
+  font-size: 12px; font-weight: 600; text-align: center;
+  background: var(--olive-pale); color: var(--ink2);
+}
+.sp-status.ok { background: #e8f5e9; color: #2e7d32; }
+.sp-status.err { background: #ffebee; color: #c62828; }
 </style>

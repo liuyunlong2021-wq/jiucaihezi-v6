@@ -26,7 +26,8 @@ function openSession(id: string) {
 }
 
 function newChat() {
-  agentStore.deselectAgent()
+  agentStore.selectAgent(null)
+  sessionStore.switchSession('')
 }
 
 onMounted(() => {

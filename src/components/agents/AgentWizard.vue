@@ -191,168 +191,115 @@ function saveSkill() {
 </script>
 
 <template>
-  <div class="wizard-overlay" @click.self="emit('close')">
-    <div class="wizard-dialog">
-      <div class="wizard-head">
-        <span class="mso">add_circle</span>
-        <span>创建搭子</span>
-        <button class="wizard-close" @click="emit('close')">&times;</button>
-      </div>
-
-      <!-- Progress bar -->
-      <div class="wizard-progress">
-        <div v-for="i in 3" :key="i" class="wizard-dot" :class="{ active: step >= i }">{{ i }}</div>
-      </div>
-
-      <!-- Step 1: 收集信息 -->
-      <div v-if="step === 1" class="wizard-body">
-        <!-- 先选模式 -->
-        <div v-if="step1Mode === 'choose'" class="wizard-choose">
-          <h3>你有没有参考资料或标准答案？</h3>
-          <p class="wizard-hint">如果你有"正确的范文"，搭子能学会你想要的输出风格。</p>
-          <div class="wizard-choice-row">
-            <button class="wizard-choice" @click="hasReference = true">
-              <span class="mso">description</span>
-              <span>有，我来发给你</span>
-            </button>
-            <button class="wizard-choice" @click="hasReference = false">
-              <span class="mso">edit_note</span>
-              <span>没有，我来描述</span>
-            </button>
-          </div>
-
-          <!-- GitHub 导入 -->
-          <div class="wizard-github-section">
-            <div class="wizard-divider"><span>或者</span></div>
-            <div class="wizard-github-row">
-              <input v-model="githubUrl" class="wizard-input" placeholder="粘贴 GitHub 仓库 URL（含 SKILL.md）" />
-              <button class="wizard-btn-sm" :disabled="isGenerating" @click="importFromGitHub">
-                {{ isGenerating ? '导入中...' : '导入' }}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 有参考资料 -->
-        <div v-else-if="step1Mode === 'reference'" class="wizard-ref">
-          <h3>发给我你的参考资料或标准答案</h3>
-          <p class="wizard-hint">搭子会分析这些内容，学会你想要的输出规则和风格。粘贴文本、链接都行。</p>
-          <textarea
-            v-model="referenceText"
-            class="wizard-textarea"
-            rows="8"
-            placeholder="粘贴参考资料/标准答案...&#10;&#10;比如：一篇你满意的小红书文案、一份标准的报告格式..."
-          ></textarea>
-          <input
-            v-model="referenceUrl"
-            class="wizard-input"
-            placeholder="参考链接（可选）"
-          />
-          <div class="wizard-actions">
-            <button class="wizard-btn-back" @click="hasReference = null">← 返回</button>
-            <button
-              class="wizard-btn-primary"
-              :disabled="!referenceText.trim() || isGenerating"
-              @click="generateSkillMd"
-            >
-              {{ isGenerating ? '正在分析...' : '分析并创建 →' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- 没有参考资料 -->
-        <div v-else class="wizard-desc">
-          <h3>想让这个搭子帮你做什么？</h3>
-          <p class="wizard-hint">用一句话描述，比如"帮我写小红书种草文案"。</p>
-          <textarea
-            v-model="purposeText"
-            class="wizard-textarea"
-            rows="3"
-            placeholder="帮我做什么..."
-          ></textarea>
-
-          <h3>输出什么样的内容算合格？</h3>
-          <p class="wizard-hint">描述你期望的输出格式、风格、长度等。</p>
-          <textarea
-            v-model="outputFormat"
-            class="wizard-textarea"
-            rows="3"
-            placeholder="比如：300-500字，口语化，带emoji，分3段..."
-          ></textarea>
-
-          <div class="wizard-actions">
-            <button class="wizard-btn-back" @click="hasReference = null">← 返回</button>
-            <button
-              class="wizard-btn-primary"
-              :disabled="!purposeText.trim() || isGenerating"
-              @click="generateSkillMd"
-            >
-              {{ isGenerating ? '正在生成...' : '生成搭子 →' }}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Step 2: 触发关键词 -->
-      <div v-if="step === 2" class="wizard-body">
-        <h3>什么时候自动叫它出来？</h3>
-        <p class="wizard-hint">填几个关键词（逗号隔开），当你的消息包含这些词时，搭子会自动接手。</p>
-        <input
-          v-model="triggers"
-          class="wizard-input"
-          placeholder="比如：小红书, 种草, 文案, 爆款"
-        />
-
-        <h3>搭子能力预览</h3>
-        <div class="wizard-preview">{{ generatedSkillMd.slice(0, 500) }}...</div>
-
-        <div class="wizard-actions">
-          <button class="wizard-btn-back" @click="step = 1">← 返回</button>
-          <button class="wizard-btn-primary" :disabled="!triggers.trim()" @click="step = 3">
-            下一步 →
-          </button>
-        </div>
-      </div>
-
-      <!-- Step 3: 起名字 -->
-      <div v-if="step === 3" class="wizard-body">
-        <h3>给搭子起个名字</h3>
-        <input
-          v-model="skillName"
-          class="wizard-input"
-          placeholder="比如：小红书文案"
-        />
-
-        <p class="wizard-model-hint">
-          💡 推荐使用 <strong>GPT-5.5</strong> 或 <strong>Opus 4.7</strong> 创建搭子，效果更好
-        </p>
-
-        <div class="wizard-actions">
-          <button class="wizard-btn-back" @click="step = 2">← 返回</button>
-          <button class="wizard-btn-primary" :disabled="!skillName.trim()" @click="saveSkill">
-            ✅ 创建搭子
-          </button>
-        </div>
-      </div>
-
-      <!-- Error -->
-      <div v-if="errorMsg" class="wizard-error">{{ errorMsg }}</div>
+  <div class="wizard-panel">
+    <div class="wizard-head">
+      <span class="mso">build_circle</span>
+      <span>创建搭子</span>
     </div>
+
+    <!-- Progress bar -->
+    <div class="wizard-progress">
+      <div v-for="i in 3" :key="i" class="wizard-dot" :class="{ active: step >= i }">{{ i }}</div>
+    </div>
+
+    <!-- Step 1: 收集信息 -->
+    <div v-if="step === 1" class="wizard-body">
+      <!-- 先选模式 -->
+      <div v-if="step1Mode === 'choose'" class="wizard-choose">
+        <h3>你有没有参考资料或标准答案？</h3>
+        <p class="wizard-hint">如果你有"正确的范文"，搭子能学会你想要的输出风格。</p>
+        <div class="wizard-choice-row">
+          <button class="wizard-choice" @click="hasReference = true">
+            <span class="mso">description</span>
+            <span>有，我来发给你</span>
+          </button>
+          <button class="wizard-choice" @click="hasReference = false">
+            <span class="mso">edit_note</span>
+            <span>没有，我来描述</span>
+          </button>
+        </div>
+
+        <!-- GitHub 导入 -->
+        <div class="wizard-github-section">
+          <div class="wizard-divider"><span>或者</span></div>
+          <div class="wizard-github-row">
+            <input v-model="githubUrl" class="wizard-input" placeholder="粘贴 GitHub 仓库 URL（含 SKILL.md）" />
+            <button class="wizard-btn-sm" :disabled="isGenerating" @click="importFromGitHub">
+              {{ isGenerating ? '导入中...' : '导入' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 有参考资料 -->
+      <div v-else-if="step1Mode === 'reference'" class="wizard-ref">
+        <h3>发给我你的参考资料或标准答案</h3>
+        <p class="wizard-hint">搭子会分析这些内容，学会你想要的输出规则和风格。</p>
+        <textarea
+          v-model="referenceText"
+          class="wizard-textarea"
+          rows="8"
+          placeholder="粘贴参考资料/标准答案..."
+        ></textarea>
+        <input v-model="referenceUrl" class="wizard-input" placeholder="参考链接（可选）" />
+        <div class="wizard-actions">
+          <button class="wizard-btn-back" @click="hasReference = null">← 返回</button>
+          <button class="wizard-btn-primary" :disabled="!referenceText.trim() || isGenerating" @click="generateSkillMd">
+            {{ isGenerating ? '分析中...' : '分析并创建 →' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- 没有参考资料 -->
+      <div v-else class="wizard-desc">
+        <h3>想让这个搭子帮你做什么？</h3>
+        <p class="wizard-hint">用一句话描述，比如"帮我写小红书种草文案"。</p>
+        <textarea v-model="purposeText" class="wizard-textarea" rows="3" placeholder="帮我做什么..."></textarea>
+
+        <h3>输出什么样的内容算合格？</h3>
+        <textarea v-model="outputFormat" class="wizard-textarea" rows="3" placeholder="比如：300-500字，口语化，带emoji..."></textarea>
+
+        <div class="wizard-actions">
+          <button class="wizard-btn-back" @click="hasReference = null">← 返回</button>
+          <button class="wizard-btn-primary" :disabled="!purposeText.trim() || isGenerating" @click="generateSkillMd">
+            {{ isGenerating ? '生成中...' : '生成搭子 →' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: 触发关键词 -->
+    <div v-if="step === 2" class="wizard-body">
+      <h3>什么时候自动叫它出来？</h3>
+      <p class="wizard-hint">填几个关键词（逗号隔开），当你的消息包含这些词时，搭子会自动接手。</p>
+      <input v-model="triggers" class="wizard-input" placeholder="比如：小红书, 种草, 文案" />
+      <h3>搭子能力预览</h3>
+      <div class="wizard-preview">{{ generatedSkillMd.slice(0, 500) }}...</div>
+      <div class="wizard-actions">
+        <button class="wizard-btn-back" @click="step = 1">← 返回</button>
+        <button class="wizard-btn-primary" :disabled="!triggers.trim()" @click="step = 3">下一步 →</button>
+      </div>
+    </div>
+
+    <!-- Step 3: 起名字 -->
+    <div v-if="step === 3" class="wizard-body">
+      <h3>给搭子起个名字</h3>
+      <input v-model="skillName" class="wizard-input" placeholder="比如：小红书文案" />
+      <div class="wizard-actions">
+        <button class="wizard-btn-back" @click="step = 2">← 返回</button>
+        <button class="wizard-btn-primary" :disabled="!skillName.trim()" @click="saveSkill">✅ 创建搭子</button>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div v-if="errorMsg" class="wizard-error">{{ errorMsg }}</div>
   </div>
 </template>
 
 <style scoped>
-.wizard-overlay {
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,.45);
-  display: flex; align-items: center; justify-content: center;
-}
-.wizard-dialog {
-  background: var(--paper);
-  border-radius: 16px;
-  width: 520px; max-width: 95vw; max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 8px 40px rgba(0,0,0,.2);
+.wizard-panel {
+  height: 100%; display: flex; flex-direction: column;
+  background: var(--surface); overflow-y: auto;
 }
 .wizard-head {
   display: flex; align-items: center; gap: 8px;
@@ -361,10 +308,6 @@ function saveSkill() {
   border-bottom: 1px solid var(--line);
 }
 .wizard-head .mso { font-size: 22px; color: var(--olive); }
-.wizard-close {
-  margin-left: auto; background: none; border: none;
-  font-size: 22px; cursor: pointer; color: var(--ink3);
-}
 .wizard-progress {
   display: flex; justify-content: center; gap: 12px; padding: 16px;
 }

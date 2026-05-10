@@ -19,8 +19,8 @@ const DEFAULT_MODEL = 'claude-sonnet-4-6'
 export async function resolveApiConfig(): Promise<ApiConfig> {
   const config = {
     apiKey: localStorage.getItem('jcApiKey') || '',
-    // 行 9848: 回退链 localStorage → JC_DEFAULT_API_BASE → window.location.origin
-    apiBase: (localStorage.getItem('jcApiBase') || ((window as any).JC_DEFAULT_API_BASE || window.location.origin)).replace(/\/+$/, '').replace(/\/v1$/, ''),
+    // API 统一走 https://api.jiucaihezi.studio（不再回退到 window.location.origin）
+    apiBase: 'https://api.jiucaihezi.studio',
     model: localStorage.getItem('jcModel') || DEFAULT_MODEL,
   }
 

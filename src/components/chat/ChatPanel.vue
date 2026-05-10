@@ -73,7 +73,7 @@ async function handleSend() {
   await sendMessage(text, {
     systemPrompt: agentStore.currentAgent?.skillContent || undefined,
     agentId: agentStore.currentAgent?.id,
-    agentName: currentAgentName.value,
+    agentName: agentStore.currentAgent?.name || agentStore.modelLabel,
   })
 
   // 保存到 IndexedDB
