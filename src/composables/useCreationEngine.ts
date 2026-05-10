@@ -82,6 +82,10 @@ async function runImageGeneration() {
       headers: { 'Authorization': `Bearer ${key}` },
       body: fd,
     })
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '')
+      throw new Error(`图片编辑提交失败 (${resp.status}): ${errText.slice(0, 200)}`)
+    }
     const json = await resp.json()
     taskId = json.data || json.task_id
   } else {
@@ -98,6 +102,10 @@ async function runImageGeneration() {
       headers: headers(),
       body: JSON.stringify(body),
     })
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '')
+      throw new Error(`提交失败 (${resp.status}): ${errText.slice(0, 200)}`)
+    }
     const json = await resp.json()
     taskId = json.data || json.task_id
   }
@@ -106,7 +114,6 @@ async function runImageGeneration() {
   cpState.progressText = '生成中...'
 
   // 轮询: GET /v1/images/tasks/{task_id}
-  // status: IN_PROGRESS / SUCCESS / FAILURE
   const result = await pollImageTask(taskId)
   if (result) {
     addResult({ url: result, type: 'image', model: m.label, task: cpState.task, ts: Date.now() })
@@ -158,6 +165,10 @@ async function runVideoGeneration() {
     headers: headers(),
     body: JSON.stringify(body),
   })
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '')
+    throw new Error(`视频提交失败 (${resp.status}): ${errText.slice(0, 200)}`)
+  }
   const json = await resp.json()
   const taskId = json.task_id
   if (!taskId) throw new Error('未获取到 task_id')

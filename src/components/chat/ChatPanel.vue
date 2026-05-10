@@ -199,7 +199,7 @@ onMounted(() => {
       <div v-if="isStreaming && messages.length > 0 && !messages[messages.length - 1]?.content" class="msg assistant">
         <div class="msg-meta">
           <div class="msg-meta-avatar"><span class="mso" style="font-size: 14px;">smart_toy</span></div>
-          <span class="msg-meta-name">{{ currentAgentName }}</span>
+          <span class="msg-meta-name">{{ agentStore.currentAgent?.name || agentStore.modelLabel }}</span>
         </div>
         <div class="msg-bubble">
           <span class="typing-dot" /><span class="typing-dot" /><span class="typing-dot" />

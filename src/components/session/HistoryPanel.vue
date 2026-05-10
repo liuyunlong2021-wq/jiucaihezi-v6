@@ -22,7 +22,7 @@ const filteredSessions = computed(() => {
 })
 
 function openSession(id: string) {
-  sessionStore.loadSession(id)
+  sessionStore.switchSession(id)
 }
 
 function newChat() {
