@@ -225,8 +225,10 @@ async function pollTask(
 
 /**
  * 生成图片 — gpt-image-2
- * 同步模式：NewAPI 服务端等待 T8 返回（Go 协程无超时限制）
- * 路由: POST /v1/images/generations 或 /v1/images/edits
+ * 
+ * 文生图: POST /v1/images/generations (JSON)
+ * 图生图: POST /v1/images/edits (multipart) — 日志验证: userId=5630, 200 OK, 60s
+ *         JSON body 带 base64 会被 Cloudflare 524 超时，必须用 multipart
  */
 export async function generateImage(
   params: ImageGenParams,
@@ -235,14 +237,28 @@ export async function generateImage(
   const { model, prompt, image, aspectRatio, resolution } = params
   const size = params.size || mapGptImageSize(aspectRatio || '1:1', resolution)
 
-  // 统一走 /v1/images/generations（V4 验证：NewAPI ImageRequest.Image 字段透传给 T8）
-  const body: any = { model, prompt, n: 1, size, response_format: 'url' }
-
-  // 以图生图：把图片作为 image 数组传入（V4 写法：image: imgUrls）
+  // ── 图生图 → multipart /v1/images/edits ──
   if (image) {
-    body.image = Array.isArray(image) ? image : [image]
+    onProgress?.(0, '上传图片中...')
+    const fields: Record<string, string | Blob> = {
+      model, prompt, size, response_format: 'url',
+    }
+    // 把 data URL 转成 Blob（NewAPI 要求 multipart file）
+    if (image.startsWith('data:')) {
+      fields.image = dataUrlToBlob(image)
+    } else {
+      // 如果是外部 URL，先下载再作为 blob
+      try { const imgRes = await fetch(image); fields.image = await imgRes.blob() }
+      catch { throw new Error('无法加载参考图片') }
+    }
+    const data = await apiCallMultipart('/v1/images/edits', fields)
+    const mediaUrl = extractMediaUrl(data, 'image')
+    if (!mediaUrl) throw new Error('图生图未获取到结果（响应: ' + JSON.stringify(data).slice(0, 200) + '）')
+    return { url: mediaUrl, type: 'image' }
   }
 
+  // ── 文生图 → JSON /v1/images/generations ──
+  const body: any = { model, prompt, n: 1, size, response_format: 'url' }
   onProgress?.(0, '提交中')
   const data = await apiCall('/v1/images/generations', body)
   const mediaUrl = extractMediaUrl(data, 'image')

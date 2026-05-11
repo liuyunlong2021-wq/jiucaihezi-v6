@@ -64,7 +64,9 @@ async function _executeCreation(snap: {
 
   try {
     if (mediaType === 'image') {
-      const imageParam = snap.task === 'image-image' && snap.files.length > 0
+      // 智能检测：有文件就自动当图生图（不依赖 task 选择器）
+      const hasRefImage = snap.files.length > 0
+      const imageParam = hasRefImage
         ? await fileToDataUrl(snap.files[0])
         : undefined
 
@@ -77,10 +79,12 @@ async function _executeCreation(snap: {
         image: imageParam,
       }, onProgress)
 
-      addResult({ url: result.url, type: 'image', model: modelDef.label, task: snap.task, ts: Date.now() })
+      addResult({ url: result.url, type: 'image', model: modelDef.label, task: hasRefImage ? 'image-image' : 'text-image', ts: Date.now() })
 
     } else if (mediaType === 'video') {
-      const imageUrl = snap.task === 'image-video' && snap.files.length > 0
+      // 智能检测：有文件就自动当图生视频
+      const hasRefImage = snap.files.length > 0
+      const imageUrl = hasRefImage
         ? await fileToDataUrl(snap.files[0])
         : undefined
 
@@ -93,7 +97,7 @@ async function _executeCreation(snap: {
         imageUrl,
       }, onProgress)
 
-      addResult({ url: result.url, type: 'video', model: modelDef.label, task: snap.task, ts: Date.now() })
+      addResult({ url: result.url, type: 'video', model: modelDef.label, task: hasRefImage ? 'image-video' : 'text-video', ts: Date.now() })
 
     } else if (mediaType === 'audio') {
       const result = await generateAudio(snap.prompt)
