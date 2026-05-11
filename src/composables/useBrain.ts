@@ -1,29 +1,35 @@
 /**
  * composables/useBrain.ts — 长脑子引擎（karpathy-llm-wiki 完全体）
  *
- * 实现 karpathy-llm-wiki 的 raw/ → wiki/ 编译模型：
- *   - raw/: 按搭子归属存储对话原文（immutable source material）
- *   - wiki/: LLM 编译的知识页（durable knowledge pages）
- *   - 两种触发模式: 自动收集 + 手动全局扫描
+ * 1:1 移植 Astro-Han/karpathy-llm-wiki SKILL.md 的全部能力:
+ *   - raw/: immutable source material
+ *   - wiki/: compiled knowledge pages + index + log
+ *   - 3 操作: Ingest (+ cascade) / Query (+ archive) / Lint
+ *   - 冲突标注 + See Also 交叉引用
  *
  * @see https://github.com/Astro-Han/karpathy-llm-wiki
  */
 import { ref, computed } from 'vue'
 import { resolveApiConfig, buildHeaders } from '@/utils/api'
-import type { BrainRawEntry, BrainWikiPage, SkillConfig } from '@/types/skill'
+import type {
+  BrainRawEntry, BrainWikiPage, SkillConfig,
+  WikiIndexEntry, WikiLogEntry,
+} from '@/types/skill'
 
 // ─── Reactive state ───
 const rawEntries = ref<BrainRawEntry[]>([])
 const wikiPages = ref<BrainWikiPage[]>([])
+const wikiIndex = ref<WikiIndexEntry[]>([])
+const wikiLog = ref<WikiLogEntry[]>([])
 const isProcessing = ref(false)
-const currentStep = ref(0) // 0-5
+const currentStep = ref(0)
 const stepLabels = [
   '',
   '正在阅读你的资料',
   '正在筛选有用经验',
   '正在匹配相关搭子',
   '正在生成增强建议',
-  '正在准备结果',
+  '正在级联更新 + 体检',
 ]
 
 export interface BrainSuggestion {
@@ -37,211 +43,236 @@ export interface BrainSuggestion {
 
 const suggestions = ref<BrainSuggestion[]>([])
 
+// ─── Lint 结果 ───
+export interface LintIssue {
+  id: string
+  severity: 'auto-fixed' | 'report'
+  category: string
+  description: string
+  pageId?: string
+}
+const lintResults = ref<LintIssue[]>([])
+
 // ─── Storage keys ───
 const RAW_KEY = 'jc_brain_raw_v1'
 const WIKI_KEY = 'jc_brain_wiki_v1'
+const INDEX_KEY = 'jc_brain_index_v1'
+const LOG_KEY = 'jc_brain_log_v1'
 
 function loadRaw(): BrainRawEntry[] {
-  try { return JSON.parse(localStorage.getItem(RAW_KEY) || '[]') }
-  catch { return [] }
+  try { return JSON.parse(localStorage.getItem(RAW_KEY) || '[]') } catch { return [] }
 }
-
 function saveRaw(entries: BrainRawEntry[]) {
   localStorage.setItem(RAW_KEY, JSON.stringify(entries))
   rawEntries.value = entries
 }
-
 function loadWiki(): BrainWikiPage[] {
-  try { return JSON.parse(localStorage.getItem(WIKI_KEY) || '[]') }
-  catch { return [] }
+  try { return JSON.parse(localStorage.getItem(WIKI_KEY) || '[]') } catch { return [] }
 }
-
 function saveWiki(pages: BrainWikiPage[]) {
   localStorage.setItem(WIKI_KEY, JSON.stringify(pages))
   wikiPages.value = pages
 }
+function loadIndex(): WikiIndexEntry[] {
+  try { return JSON.parse(localStorage.getItem(INDEX_KEY) || '[]') } catch { return [] }
+}
+function saveIndex(entries: WikiIndexEntry[]) {
+  localStorage.setItem(INDEX_KEY, JSON.stringify(entries))
+  wikiIndex.value = entries
+}
+function loadLog(): WikiLogEntry[] {
+  try { return JSON.parse(localStorage.getItem(LOG_KEY) || '[]') } catch { return [] }
+}
+function saveLog(entries: WikiLogEntry[]) {
+  localStorage.setItem(LOG_KEY, JSON.stringify(entries))
+  wikiLog.value = entries
+}
 
-/**
- * 自动模式：对话结束后自动收集到 raw/
- * karpathy-wiki: "Ingest your first source — store in raw/"
- */
-export function ingestConversation(
-  skillId: string,
-  conversation: string
-) {
+function uid(prefix: string) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+}
+
+function appendLog(op: WikiLogEntry['operation'], desc: string, pages: string[] = []) {
+  const logs = loadLog()
+  logs.push({ id: uid('log'), timestamp: Date.now(), operation: op, description: desc, affectedPages: pages })
+  saveLog(logs)
+}
+
+function rebuildIndex() {
+  const wikis = loadWiki()
+  const idx: WikiIndexEntry[] = wikis.map(w => ({
+    pageId: w.id, title: w.title, topic: w.topic || 'general',
+    summary: w.content.slice(0, 100), updatedAt: w.updatedAt,
+  }))
+  saveIndex(idx)
+}
+
+// ─── Ingest ───
+export function ingestConversation(skillId: string, conversation: string) {
   const entries = loadRaw()
   const entry: BrainRawEntry = {
-    id: 'raw_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-    skillId,
-    content: conversation,
-    timestamp: Date.now(),
-    indexed: false,
+    id: uid('raw'), skillId, content: conversation,
+    timestamp: Date.now(), indexed: false,
+    collectedAt: Date.now(), topic: 'conversation',
   }
   entries.push(entry)
   saveRaw(entries)
 }
 
-/**
- * 获取每个搭子的知识状态摘要
- */
+// ─── Stats ───
 export function getSkillBrainStats(skills: SkillConfig[]) {
   const raws = loadRaw()
   const wikis = loadWiki()
-
   return skills.map(skill => {
     const rawCount = raws.filter(r => r.skillId === skill.id).length
     const wikiCount = wikis.filter(w => w.skillId === skill.id).length
     const unindexed = raws.filter(r => r.skillId === skill.id && !r.indexed).length
-    const lastWiki = wikis
-      .filter(w => w.skillId === skill.id)
-      .sort((a, b) => b.updatedAt - a.updatedAt)[0]
-
-    return {
-      skillId: skill.id,
-      skillName: skill.name,
-      rawCount,
-      wikiCount,
-      unindexedCount: unindexed,
-      lastCompiled: lastWiki?.updatedAt || 0,
-    }
+    const lastWiki = wikis.filter(w => w.skillId === skill.id).sort((a, b) => b.updatedAt - a.updatedAt)[0]
+    return { skillId: skill.id, skillName: skill.name, rawCount, wikiCount, unindexedCount: unindexed, lastCompiled: lastWiki?.updatedAt || 0 }
   })
 }
 
-/**
- * 手动模式：全局扫描未索引对话 → 编译 wiki 页
- * karpathy-wiki: "ingest → compile → query"
- */
-export async function runBrainCompilation(
-  skills: SkillConfig[]
-): Promise<BrainSuggestion[]> {
+// ─── Compile (with Cascade + Conflict) ───
+export async function runBrainCompilation(skills: SkillConfig[]): Promise<BrainSuggestion[]> {
   isProcessing.value = true
   currentStep.value = 1
   suggestions.value = []
-
   try {
     const raws = loadRaw()
     const unindexed = raws.filter(r => !r.indexed)
+    if (unindexed.length === 0) { isProcessing.value = false; currentStep.value = 0; return [] }
 
-    if (unindexed.length === 0) {
-      isProcessing.value = false
-      currentStep.value = 0
-      return []
-    }
-
-    // Step 1: 阅读资料 — 按搭子分组
     const grouped: Record<string, BrainRawEntry[]> = {}
     for (const entry of unindexed) {
       if (!grouped[entry.skillId]) grouped[entry.skillId] = []
       grouped[entry.skillId].push(entry)
     }
-
     currentStep.value = 2
 
-    // Step 2: 筛选有用经验 — 发送给 LLM 分析
     const config = await resolveApiConfig()
     const allSuggestions: BrainSuggestion[] = []
+    const touchedPageIds: string[] = []
 
     for (const [skillId, entries] of Object.entries(grouped)) {
       const skill = skills.find(s => s.id === skillId)
       if (!skill) continue
-
       currentStep.value = 3
 
-      const conversationText = entries
-        .map(e => e.content)
-        .join('\n\n---\n\n')
-        .slice(0, 8000) // 控制上下文长度
+      // 获取该搭子已有 wiki 页（用于冲突检测）
+      const existingWikis = loadWiki().filter(w => w.skillId === skillId && !w.archived)
+      const existingContext = existingWikis.length > 0
+        ? `\n\n## 已有知识页（检查冲突用）\n${existingWikis.map(w => `### ${w.title}\n${w.content.slice(0, 300)}`).join('\n\n')}`
+        : ''
 
-      // karpathy-wiki 编译 prompt
-      const compilePrompt = `你是一个知识库编译器（参考 karpathy-llm-wiki 模式）。
+      const conversationText = entries.map(e => e.content).join('\n\n---\n\n').slice(0, 8000)
+
+      const compilePrompt = `你是一个知识库编译器（karpathy-llm-wiki 模式）。
 
 ## 当前搭子
 名称: ${skill.name}
 当前 SKILL.md:
 ${skill.skillContent.slice(0, 2000)}
+${existingContext}
 
 ## 原始对话记录（raw/）
 ${conversationText}
 
 ## 你的任务
-分析这些对话记录，提取可以复用的经验，生成增强建议。每条建议必须指明类型：
-
-- **rule**: 应该添加到搭子的工作流程/规则中的新发现
-- **reference**: 有价值的参考资料/链接/知识点
-- **example**: 典型的好对话案例，可以作为示例
-- **trigger**: 用户常用但当前搭子未覆盖的触发词
+1. 分析对话记录，提取可复用的经验
+2. **冲突检测**: 如果新内容与"已有知识页"矛盾，标注 [CONFLICT: 页面标题] 并说明分歧
+3. 生成建议，每条指明类型: rule / reference / example / trigger
 
 ## 输出格式
-严格输出 JSON 数组（不要 markdown）：
-[{"type": "rule|reference|example|trigger", "content": "具体内容"}]
-
-如果没有有价值的经验，输出空数组 []。`
+严格输出 JSON 数组:
+[{"type": "rule|reference|example|trigger", "content": "具体内容", "conflict": "可选，冲突的页面标题"}]
+无有价值经验则输出 []。`
 
       currentStep.value = 4
-
       try {
         const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
-          method: 'POST',
-          headers: buildHeaders(config),
+          method: 'POST', headers: buildHeaders(config),
           body: JSON.stringify({
             model: config.model || 'claude-sonnet-4-6',
             messages: [
               { role: 'system', content: compilePrompt },
               { role: 'user', content: '请分析以上对话记录，提取可复用的经验。' },
             ],
-            temperature: 0.3,
-            max_tokens: 2000,
-            stream: false,
+            temperature: 0.3, max_tokens: 2000, stream: false,
           }),
         })
-
         if (res.ok) {
           const data = await res.json()
           const text = data.choices?.[0]?.message?.content || '[]'
           const jsonMatch = text.match(/\[[\s\S]*\]/)
           if (jsonMatch) {
-            const items = JSON.parse(jsonMatch[0]) as { type: string; content: string }[]
+            const items = JSON.parse(jsonMatch[0]) as { type: string; content: string; conflict?: string }[]
             for (const item of items) {
               allSuggestions.push({
-                id: 'sug_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
-                skillId,
-                skillName: skill.name,
+                id: uid('sug'), skillId, skillName: skill.name,
                 type: item.type as BrainSuggestion['type'],
-                content: item.content,
+                content: item.conflict ? `${item.content}\n[冲突: ${item.conflict}]` : item.content,
                 status: 'pending',
               })
             }
           }
         }
-      } catch (e) {
-        console.warn('[Brain] Compile error for skill:', skillId, e)
-      }
+      } catch (e) { console.warn('[Brain] Compile error:', skillId, e) }
     }
 
     currentStep.value = 5
 
     // 标记已索引
     const updatedRaws = raws.map(r => {
-      if (!r.indexed && unindexed.some(u => u.id === r.id)) {
-        return { ...r, indexed: true }
-      }
+      if (!r.indexed && unindexed.some(u => u.id === r.id)) return { ...r, indexed: true }
       return r
     })
     saveRaw(updatedRaws)
 
-    // 保存 wiki 页
+    // 保存 wiki 页 + Cascade Updates
     if (allSuggestions.length > 0) {
       const wikis = loadWiki()
       const newPage: BrainWikiPage = {
-        id: 'wiki_' + Date.now().toString(36),
-        skillId: '_compilation',
-        title: `整理 ${new Date().toLocaleDateString('zh-CN')}`,
+        id: uid('wiki'), skillId: '_compilation', title: `整理 ${new Date().toLocaleDateString('zh-CN')}`,
         content: allSuggestions.map(s => `[${s.type}] ${s.content}`).join('\n'),
-        sources: unindexed.map(e => e.id),
-        updatedAt: Date.now(),
+        sources: unindexed.map(e => e.id), updatedAt: Date.now(),
+        topic: 'compilation', seeAlso: [], archived: false, conflicts: [],
       }
+
+      // Cascade: 检查冲突标注，更新相关页面的 conflicts 字段
+      const conflictItems = allSuggestions.filter(s => s.content.includes('[冲突:'))
+      for (const ci of conflictItems) {
+        const match = ci.content.match(/\[冲突: (.+?)\]/)
+        if (match) {
+          const conflictTitle = match[1]
+          const target = wikis.find(w => w.title.includes(conflictTitle))
+          if (target) {
+            if (!target.conflicts) target.conflicts = []
+            target.conflicts.push(newPage.id)
+            newPage.conflicts.push(target.id)
+            touchedPageIds.push(target.id)
+          }
+        }
+      }
+
+      // Cascade: 更新同 topic 页面的 seeAlso
+      const sameTopic = wikis.filter(w => w.topic === newPage.topic && w.id !== newPage.id && !w.archived)
+      for (const p of sameTopic) {
+        if (!p.seeAlso) p.seeAlso = []
+        if (!p.seeAlso.includes(newPage.id)) p.seeAlso.push(newPage.id)
+        newPage.seeAlso.push(p.id)
+        touchedPageIds.push(p.id)
+      }
+
       wikis.push(newPage)
       saveWiki(wikis)
+      touchedPageIds.push(newPage.id)
+    }
+
+    // Post-Ingest: 更新 index + 追加 log
+    rebuildIndex()
+    appendLog('ingest', `编译 ${allSuggestions.length} 条建议，来自 ${unindexed.length} 条对话`, touchedPageIds)
+    if (touchedPageIds.length > 1) {
+      appendLog('cascade', `级联更新 ${touchedPageIds.length - 1} 个相关页面`, touchedPageIds)
     }
 
     suggestions.value = allSuggestions
@@ -252,42 +283,130 @@ ${conversationText}
   }
 }
 
-/**
- * 采用/忽略建议
- */
+// ─── Lint 操作 ───
+export function runBrainLint(): LintIssue[] {
+  const wikis = loadWiki()
+  const idx = loadIndex()
+  const issues: LintIssue[] = []
+  let autoFixed = 0
+
+  // 确定性检查 1: 索引一致性
+  for (const w of wikis) {
+    const inIdx = idx.find(i => i.pageId === w.id)
+    if (!inIdx) {
+      issues.push({ id: uid('lint'), severity: 'auto-fixed', category: '索引缺失', description: `"${w.title}" 存在但未被索引`, pageId: w.id })
+      autoFixed++
+    }
+  }
+  for (const i of idx) {
+    const exists = wikis.find(w => w.id === i.pageId)
+    if (!exists) {
+      i.missing = true
+      issues.push({ id: uid('lint'), severity: 'auto-fixed', category: '索引指向缺失', description: `索引条目 "${i.title}" 指向不存在的页面`, pageId: i.pageId })
+      autoFixed++
+    }
+  }
+
+  // 确定性检查 2: See Also 有效性
+  for (const w of wikis) {
+    if (!w.seeAlso) continue
+    const broken = w.seeAlso.filter(ref => !wikis.find(p => p.id === ref))
+    if (broken.length > 0) {
+      w.seeAlso = w.seeAlso.filter(ref => wikis.find(p => p.id === ref))
+      issues.push({ id: uid('lint'), severity: 'auto-fixed', category: 'See Also 失效', description: `"${w.title}" 移除 ${broken.length} 个失效引用`, pageId: w.id })
+      autoFixed++
+    }
+  }
+
+  // 确定性检查 3: 同 topic 补充 See Also
+  const byTopic: Record<string, BrainWikiPage[]> = {}
+  for (const w of wikis) {
+    const t = w.topic || 'general'
+    if (!byTopic[t]) byTopic[t] = []
+    byTopic[t].push(w)
+  }
+  for (const pages of Object.values(byTopic)) {
+    if (pages.length < 2) continue
+    for (const p of pages) {
+      if (!p.seeAlso) p.seeAlso = []
+      for (const other of pages) {
+        if (other.id !== p.id && !p.seeAlso.includes(other.id)) {
+          p.seeAlso.push(other.id)
+          issues.push({ id: uid('lint'), severity: 'auto-fixed', category: 'See Also 补充', description: `"${p.title}" ← → "${other.title}"`, pageId: p.id })
+          autoFixed++
+        }
+      }
+    }
+  }
+
+  // 启发式检查 1: 孤儿页
+  for (const w of wikis) {
+    const hasInbound = wikis.some(other => other.id !== w.id && other.seeAlso?.includes(w.id))
+    if (!hasInbound && wikis.length > 1) {
+      issues.push({ id: uid('lint'), severity: 'report', category: '孤儿页', description: `"${w.title}" 没有任何入站链接`, pageId: w.id })
+    }
+  }
+
+  // 启发式检查 2: 冲突未解决
+  for (const w of wikis) {
+    if (w.conflicts && w.conflicts.length > 0) {
+      issues.push({ id: uid('lint'), severity: 'report', category: '未解决冲突', description: `"${w.title}" 与 ${w.conflicts.length} 个页面存在事实分歧`, pageId: w.id })
+    }
+  }
+
+  // 启发式检查 3: 过时页面（超过 30 天未更新）
+  const thirtyDays = 30 * 24 * 60 * 60 * 1000
+  for (const w of wikis) {
+    if (Date.now() - w.updatedAt > thirtyDays) {
+      issues.push({ id: uid('lint'), severity: 'report', category: '可能过时', description: `"${w.title}" 已 ${Math.floor((Date.now() - w.updatedAt) / (24 * 60 * 60 * 1000))} 天未更新`, pageId: w.id })
+    }
+  }
+
+  // 保存修复后的数据
+  saveWiki(wikis)
+  rebuildIndex()
+  appendLog('lint', `${issues.length} 个问题，${autoFixed} 个自动修复`, issues.filter(i => i.pageId).map(i => i.pageId!))
+
+  lintResults.value = issues
+  return issues
+}
+
+// ─── Query 归档 ───
+export function archiveQueryResult(title: string, content: string, sourcePageIds: string[], skillId: string) {
+  const wikis = loadWiki()
+  const archivePage: BrainWikiPage = {
+    id: uid('wiki'), skillId, title: `[归档] ${title}`,
+    content, sources: [], updatedAt: Date.now(),
+    topic: 'archive', seeAlso: sourcePageIds,
+    archived: true, conflicts: [],
+  }
+  wikis.push(archivePage)
+  saveWiki(wikis)
+  rebuildIndex()
+  appendLog('archive', `归档: ${title}`, [archivePage.id])
+}
+
+// ─── 建议操作 ───
 export function setSuggestionStatus(id: string, status: 'accepted' | 'ignored') {
   const idx = suggestions.value.findIndex(s => s.id === id)
   if (idx !== -1) suggestions.value[idx].status = status
 }
-
 export function acceptAllSuggestions() {
-  suggestions.value.forEach(s => {
-    if (s.status === 'pending') s.status = 'accepted'
-  })
+  suggestions.value.forEach(s => { if (s.status === 'pending') s.status = 'accepted' })
 }
-
 export function ignoreAllSuggestions() {
-  suggestions.value.forEach(s => {
-    if (s.status === 'pending') s.status = 'ignored'
-  })
+  suggestions.value.forEach(s => { if (s.status === 'pending') s.status = 'ignored' })
 }
 
-/**
- * 知识回忆 — 聊天时自动匹配知识条目注入上下文
- * 移植自 V4 code.html recallKnowledge() (行 17918-17960)
- * 使用 n-gram + CJK 二元组匹配
- */
+// ─── 知识回忆 ───
 export function recallKnowledge(userMsg: string, skillId?: string): string {
   const wikis = loadWiki()
   if (!wikis.length || !userMsg.trim()) return ''
 
   const msg = userMsg.toLowerCase()
   const tokens = new Set<string>()
-
-  // 英文分词
   msg.split(/\s+/).forEach(w => { if (w.length > 1) tokens.add(w) })
 
-  // CJK 二元组（移植自 V4 行 17923-17930）
   const cjkRuns = msg.match(/[\u4e00-\u9fff\u3400-\u4dbf]+/g) || []
   cjkRuns.forEach(run => {
     for (let i = 0; i < run.length; i++) {
@@ -296,34 +415,30 @@ export function recallKnowledge(userMsg: string, skillId?: string): string {
     }
     if (run.length >= 3) tokens.add(run)
   })
-
   if (tokens.size === 0) return ''
 
-  // 评分每个 wiki 页
   const scored = wikis
     .filter(w => !skillId || w.skillId === skillId || w.skillId === '_compilation')
     .map(wiki => {
       const text = (wiki.title + ' ' + wiki.content).toLowerCase()
       let score = 0
-      tokens.forEach(t => {
-        if (text.includes(t)) score += t.length // 长 token 权重高
-      })
+      tokens.forEach(t => { if (text.includes(t)) score += t.length })
       return { wiki, score }
     })
-    .filter(s => s.score > 2) // 最低门槛
+    .filter(s => s.score > 2)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 3) // 最多 3 条
+    .slice(0, 3)
 
   if (scored.length === 0) return ''
+
+  // 记录 query 到 log
+  appendLog('query', `回忆匹配 ${scored.length} 条`, scored.map(s => s.wiki.id))
 
   const lines = scored.map(s => `- ${s.wiki.title}: ${s.wiki.content.slice(0, 200)}`)
   return `\n\n---\n[知识回忆]\n${lines.join('\n')}`
 }
 
-/**
- * 将已采用的建议实际应用到搭子的 skillContent
- * BrainPanel 点"采用"后调用
- */
+// ─── 获取已采用建议（按搭子分组）───
 export function getAcceptedSuggestionsBySkill(): Record<string, BrainSuggestion[]> {
   const accepted = suggestions.value.filter(s => s.status === 'accepted')
   const grouped: Record<string, BrainSuggestion[]> = {}
@@ -335,24 +450,18 @@ export function getAcceptedSuggestionsBySkill(): Record<string, BrainSuggestion[
 }
 
 export function useBrain() {
-  // 初始化加载
   rawEntries.value = loadRaw()
   wikiPages.value = loadWiki()
+  wikiIndex.value = loadIndex()
+  wikiLog.value = loadLog()
 
   return {
-    rawEntries,
-    wikiPages,
-    isProcessing,
-    currentStep,
-    stepLabels,
-    suggestions,
-    ingestConversation,
-    getSkillBrainStats,
-    runBrainCompilation,
-    setSuggestionStatus,
-    acceptAllSuggestions,
-    ignoreAllSuggestions,
-    recallKnowledge,
-    getAcceptedSuggestionsBySkill,
+    rawEntries, wikiPages, wikiIndex, wikiLog,
+    isProcessing, currentStep, stepLabels, suggestions, lintResults,
+    ingestConversation, getSkillBrainStats, runBrainCompilation,
+    setSuggestionStatus, acceptAllSuggestions, ignoreAllSuggestions,
+    recallKnowledge, getAcceptedSuggestionsBySkill,
+    // karpathy-wiki 完全体新增
+    runBrainLint, archiveQueryResult, rebuildIndex,
   }
 }

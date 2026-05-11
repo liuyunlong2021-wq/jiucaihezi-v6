@@ -23,8 +23,13 @@ const {
   currentStep,
   stepLabels,
   suggestions,
+  lintResults,
+  wikiLog,
+  wikiIndex,
   getSkillBrainStats,
   runBrainCompilation,
+  runBrainLint,
+  archiveQueryResult,
   setSuggestionStatus,
   acceptAllSuggestions,
   ignoreAllSuggestions,
@@ -34,7 +39,7 @@ const {
 const { evolveSkill, keepEvolution, isEvolving, evolveStep, evolveStepLabels } = useEvolution()
 
 // ─── 视图切换 ───
-type ViewMode = 'index' | 'processing' | 'result' | 'evolving' | 'evolve-preview'
+type ViewMode = 'index' | 'processing' | 'result' | 'evolving' | 'evolve-preview' | 'lint-result' | 'log'
 const viewMode = ref<ViewMode>('index')
 const resultTab = ref<'pending' | 'accepted' | 'ignored'>('pending')
 
@@ -49,6 +54,12 @@ async function startBrainRun() {
   viewMode.value = 'processing'
   await runBrainCompilation(store.agents)
   viewMode.value = 'result'
+}
+
+// ─── 体检（Lint） ───
+function startLint() {
+  runBrainLint()
+  viewMode.value = 'lint-result'
 }
 
 // ─── 采用单条建议 → 实际写入搭子 ───
@@ -205,13 +216,19 @@ function formatDate(ts: number) {
         </div>
       </div>
 
-      <!-- 操作按钮（搬运自 dazi L1788-1789） -->
+      <!-- 操作按钮 -->
       <div class="brain-action-row">
         <button class="brain-primary-btn" @click="startBrainRun">
           <span class="mso">play_arrow</span>整理
         </button>
         <button class="brain-primary-btn brain-fb-btn" @click="startFanbu" title="将知识库内容对照搭子进行升级（darwin-skill）">
           <span class="mso">auto_fix_high</span>反哺
+        </button>
+        <button class="brain-secondary-btn brain-lint-btn" @click="startLint" title="知识库体检（karpathy-wiki lint）">
+          <span class="mso">health_and_safety</span>体检
+        </button>
+        <button class="brain-secondary-btn" @click="viewMode = 'log'" title="操作日志（wiki/log.md）">
+          <span class="mso">receipt_long</span>日志
         </button>
         <button class="brain-secondary-btn" @click="viewMode = 'result'" v-if="suggestions.length > 0">
           <span class="mso">history</span>上次结果
@@ -341,6 +358,45 @@ function formatDate(ts: number) {
         </div>
       </div>
 
+      <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
+    </div>
+
+    <!-- ─── 体检结果视图（karpathy-wiki Lint） ─── -->
+    <div v-if="viewMode === 'lint-result'" class="brain-body">
+      <div class="brain-result-title">🩺 知识库体检报告</div>
+      <div class="brain-result-copy">
+        {{ lintResults.filter(i => i.severity === 'auto-fixed').length }} 个自动修复，
+        {{ lintResults.filter(i => i.severity === 'report').length }} 个需关注
+      </div>
+      <div class="brain-suggestion-list">
+        <div v-for="issue in lintResults" :key="issue.id" class="brain-suggestion-card">
+          <div class="sug-head">
+            <span class="sug-type" :class="{ 'lint-fixed': issue.severity === 'auto-fixed', 'lint-report': issue.severity === 'report' }">
+              {{ issue.severity === 'auto-fixed' ? '✅ 已修复' : '⚠️ 需关注' }}
+            </span>
+            <span class="sug-skill">{{ issue.category }}</span>
+          </div>
+          <div class="sug-content">{{ issue.description }}</div>
+        </div>
+        <div v-if="lintResults.length === 0" class="brain-empty">知识库状态良好，没有发现问题。</div>
+      </div>
+      <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
+    </div>
+
+    <!-- ─── 操作日志视图（wiki/log.md） ─── -->
+    <div v-if="viewMode === 'log'" class="brain-body">
+      <div class="brain-result-title">📋 操作日志</div>
+      <div class="brain-result-copy">wiki/log.md — append-only 操作记录</div>
+      <div class="brain-suggestion-list">
+        <div v-for="entry in [...wikiLog].reverse().slice(0, 50)" :key="entry.id" class="brain-suggestion-card">
+          <div class="sug-head">
+            <span class="sug-type log-op">{{ entry.operation }}</span>
+            <span class="sug-skill">{{ new Date(entry.timestamp).toLocaleString('zh-CN') }}</span>
+          </div>
+          <div class="sug-content">{{ entry.description }}</div>
+        </div>
+        <div v-if="wikiLog.length === 0" class="brain-empty">暂无操作记录。</div>
+      </div>
       <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
     </div>
   </div>
@@ -513,4 +569,14 @@ function formatDate(ts: number) {
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .evolve-actions { display: flex; gap: 8px; }
+
+/* Lint 体检 */
+.brain-lint-btn { border-color: #4a7; }
+.lint-fixed { color: #2e7d32; font-weight: 600; }
+.lint-report { color: #e67e22; font-weight: 600; }
+.log-op {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  background: rgba(107,142,35,.1); color: var(--olive);
+}
 </style>
