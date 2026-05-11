@@ -110,11 +110,50 @@ async function _executeCreation(snap: {
 }
 
 // ─── 工具 ───
+
+/** 读取文件并压缩图片（防止 413 请求体过大） */
 async function fileToDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = reject
-    reader.readAsDataURL(f)
+  // 非图片直接读取
+  if (!f.type.startsWith('image/')) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = reject
+      reader.readAsDataURL(f)
+    })
+  }
+
+  // 图片：加载到 canvas 压缩
+  const MAX_DIM = 2048  // 最大边长
+  const MAX_SIZE = 4 * 1024 * 1024  // 4MB
+
+  const img = new Image()
+  const url = URL.createObjectURL(f)
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve()
+    img.onerror = reject
+    img.src = url
   })
+  URL.revokeObjectURL(url)
+
+  let { width, height } = img
+  // 缩放到最大边长
+  if (width > MAX_DIM || height > MAX_DIM) {
+    const scale = MAX_DIM / Math.max(width, height)
+    width = Math.round(width * scale)
+    height = Math.round(height * scale)
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d')!
+  ctx.drawImage(img, 0, 0, width, height)
+
+  // 尝试不同质量直到小于 MAX_SIZE
+  for (const quality of [0.9, 0.8, 0.7, 0.5]) {
+    const dataUrl = canvas.toDataURL('image/jpeg', quality)
+    if (dataUrl.length * 0.75 < MAX_SIZE) return dataUrl
+  }
+  return canvas.toDataURL('image/jpeg', 0.5)
 }
