@@ -57,22 +57,74 @@ function onRailSwitch(mode: string) {
   }
 }
 
-// ─── 搭子仓库：方形卡片，点击发起聊天 ───
-const warehouseAgents = computed(() =>
-  agentStore.PRESETS.map(p => ({
-    id: p.id,
-    name: p.name,
-    description: p.description || '',
-    triggers: p.triggers || [],
-  }))
-)
+// ─── 搭子仓库：搜索 + 分组 + 右键菜单 ───
+const agentFilter = ref('')
+const presetCollapsed = ref(false)
+const customCollapsed = ref(false)
+const editAgent = ref<SkillConfig | null>(null)
+
+// 分组 + 过滤
+const filteredPresets = computed(() => {
+  const q = agentFilter.value.toLowerCase()
+  return agentStore.PRESETS.filter(a =>
+    !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q)
+  )
+})
+const filteredCustom = computed(() => {
+  const q = agentFilter.value.toLowerCase()
+  return agentStore.agents
+    .filter(a => !agentStore.PRESETS.some(p => p.id === a.id))
+    .filter(a => !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q))
+})
 
 function startChatWithAgent(agentId: string) {
   agentStore.selectAgent(agentId)
-  // 关闭路由
   if (agentStore.routerEnabled) agentStore.toggleRouter()
-  // 关闭右侧面板
   rightPanel.value = ''
+}
+
+// ─── 右键菜单 ───
+const contextMenu = ref({ show: false, x: 0, y: 0, agent: null as SkillConfig | null, isPreset: false })
+
+function openContextMenu(e: MouseEvent, a: any) {
+  const skill = agentStore.agents.find(s => s.id === a.id)
+  contextMenu.value = {
+    show: true,
+    x: e.clientX,
+    y: e.clientY,
+    agent: skill || null,
+    isPreset: agentStore.PRESETS.some(p => p.id === a.id),
+  }
+}
+function editContextAgent() {
+  editAgent.value = contextMenu.value.agent
+  contextMenu.value.show = false
+  showAgentEditor.value = true
+}
+function aiRewriteContextAgent() {
+  editAgent.value = contextMenu.value.agent
+  contextMenu.value.show = false
+  showAgentEditor.value = true
+  // AgentEditDialog 会自动进入编辑模式
+}
+function exportContextAgent() {
+  const a = contextMenu.value.agent
+  contextMenu.value.show = false
+  if (!a) return
+  const blob = new Blob([JSON.stringify(a, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${a.name}.skill.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+function deleteContextAgent() {
+  const a = contextMenu.value.agent
+  contextMenu.value.show = false
+  if (!a) return
+  if (!confirm(`确定删除搭子「${a.name}」？`)) return
+  agentStore.deleteAgent(a.id)
 }
 
 // ─── Resize ───
@@ -142,22 +194,54 @@ function onResizeEnd() {
         <!-- 创建搭子 → Col 5 -->
         <AgentWizard v-if="rightPanel === 'create'" @close="rightPanel = ''" />
 
-        <!-- 搭子仓库 — 方形卡片排布 -->
+        <!-- 搭子仓库 — 搜索 + 分组 + 右键菜单（移植自 V4 renderAgentList） -->
         <div v-else-if="rightPanel === 'agents'" class="ws-warehouse">
           <div class="ws-warehouse-head">
             <h3>搭子仓库</h3>
+            <button class="ws-wh-add-btn" @click="rightPanel = 'create'" title="创建新搭子">
+              <span class="mso" style="font-size:16px">add</span>
+            </button>
           </div>
-          <div class="ws-warehouse-grid">
-            <div v-for="a in warehouseAgents" :key="a.id" class="ws-wh-card"
-                 :class="{ active: agentStore.currentAgent?.id === a.id }">
-              <div class="ws-wh-name">{{ a.name }}</div>
-              <div class="ws-wh-desc">{{ a.description.slice(0, 40) }}</div>
-              <div class="ws-wh-triggers" v-if="a.triggers.length">
-                <span v-for="t in a.triggers.slice(0, 3)" :key="t" class="ws-wh-tag">{{ t }}</span>
+          <!-- 搜索框 -->
+          <div class="ws-wh-search">
+            <span class="mso" style="font-size:16px;color:var(--ink3)">search</span>
+            <input v-model="agentFilter" type="text" placeholder="搜索搭子..." class="ws-wh-search-input" />
+          </div>
+          <!-- 预设搭子组 -->
+          <div class="ws-wh-group">
+            <div class="ws-wh-group-head" @click="presetCollapsed = !presetCollapsed">
+              <span class="mso ws-wh-chevron" :class="{ collapsed: presetCollapsed }">expand_more</span>
+              <span>预设搭子</span>
+              <span class="ws-wh-count">{{ filteredPresets.length }}</span>
+            </div>
+            <div v-if="!presetCollapsed" class="ws-wh-group-body">
+              <div v-for="a in filteredPresets" :key="a.id" class="ws-wh-item"
+                   :class="{ active: agentStore.currentAgent?.id === a.id }"
+                   @click="startChatWithAgent(a.id)"
+                   @contextmenu.prevent="openContextMenu($event, a)">
+                <div class="ws-wh-item-name">{{ a.name }}</div>
+                <div class="ws-wh-item-desc">{{ a.description.slice(0, 50) }}</div>
               </div>
-              <button class="ws-wh-chat-btn" @click="startChatWithAgent(a.id)">
-                <span class="mso" style="font-size:14px">chat</span> 发起聊天
-              </button>
+            </div>
+          </div>
+          <!-- 自定义搭子组 -->
+          <div class="ws-wh-group">
+            <div class="ws-wh-group-head" @click="customCollapsed = !customCollapsed">
+              <span class="mso ws-wh-chevron" :class="{ collapsed: customCollapsed }">expand_more</span>
+              <span>我的搭子</span>
+              <span class="ws-wh-count">{{ filteredCustom.length }}</span>
+            </div>
+            <div v-if="!customCollapsed" class="ws-wh-group-body">
+              <div v-for="a in filteredCustom" :key="a.id" class="ws-wh-item"
+                   :class="{ active: agentStore.currentAgent?.id === a.id }"
+                   @click="startChatWithAgent(a.id)"
+                   @contextmenu.prevent="openContextMenu($event, a)">
+                <div class="ws-wh-item-name">{{ a.name }}</div>
+                <div class="ws-wh-item-desc">{{ a.description.slice(0, 50) }}</div>
+              </div>
+              <div v-if="filteredCustom.length === 0" class="ws-wh-empty">
+                还没有自建搭子，点击上方 + 创建一个吧。
+              </div>
             </div>
           </div>
         </div>
@@ -182,8 +266,28 @@ function onResizeEnd() {
            @mousedown.prevent="onResizeStart($event, 'right')" />
     </div>
 
+    <!-- 右键菜单（Teleport 到 body，不打断 v-if 链） -->
+    <Teleport to="body">
+      <div v-if="contextMenu.show" class="ws-ctx-overlay" @click="contextMenu.show = false">
+        <div class="ws-ctx-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }">
+          <button class="ws-ctx-item" @click="editContextAgent">
+            <span class="mso">edit</span> 编辑
+          </button>
+          <button class="ws-ctx-item" @click="aiRewriteContextAgent">
+            <span class="mso">auto_fix_high</span> AI 重写
+          </button>
+          <button class="ws-ctx-item" @click="exportContextAgent">
+            <span class="mso">download</span> 导出 JSON
+          </button>
+          <button v-if="!contextMenu.isPreset" class="ws-ctx-item ws-ctx-danger" @click="deleteContextAgent">
+            <span class="mso">delete</span> 删除
+          </button>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- Dialogs -->
-    <AgentEditDialog :visible="showAgentEditor" @close="showAgentEditor = false" />
+    <AgentEditDialog :visible="showAgentEditor" :editAgent="editAgent" @close="showAgentEditor = false; editAgent = null" />
     <Teleport to="body">
       <div v-if="showEvolution && evolutionSkill" class="ws-evo-overlay" @click.self="showEvolution = false">
         <div class="ws-evo-dialog">
@@ -226,37 +330,72 @@ function onResizeEnd() {
 .ws-placeholder p { font-size: 14px; font-weight: 600; }
 .ws-hint { font-size: 12px !important; font-weight: 400 !important; color: var(--ink3); }
 
-/* ─── 搭子仓库 — 方形卡片 ─── */
+/* ─── 搭子仓库 — 列表 + 分组 + 搜索 ─── */
 .ws-warehouse { display: flex; flex-direction: column; height: 100%; }
 .ws-warehouse-head {
-  padding: 16px; border-bottom: 1px solid var(--line);
+  padding: 14px 16px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: space-between;
 }
 .ws-warehouse-head h3 { font-size: 15px; font-weight: 700; color: var(--ink1); margin: 0; }
-.ws-warehouse-grid {
-  flex: 1; overflow-y: auto; padding: 12px;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px; align-content: start;
+.ws-wh-add-btn {
+  width: 28px; height: 28px; border-radius: 6px; border: 1.5px solid var(--line);
+  background: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  color: var(--ink2); transition: all .12s;
 }
-.ws-wh-card {
-  padding: 14px; border-radius: 12px; border: 1.5px solid var(--line);
-  display: flex; flex-direction: column; gap: 6px; transition: all .15s;
+.ws-wh-add-btn:hover { border-color: var(--olive); color: var(--olive); }
+/* 搜索 */
+.ws-wh-search {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; margin: 8px 12px 4px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg);
 }
-.ws-wh-card:hover { border-color: var(--olive); box-shadow: 0 2px 12px rgba(0,0,0,.06); }
-.ws-wh-card.active { border-color: var(--olive); background: rgba(107,142,35,.05); }
-.ws-wh-name { font-size: 14px; font-weight: 700; color: var(--ink1); }
-.ws-wh-desc { font-size: 12px; color: var(--ink3); line-height: 1.5; }
-.ws-wh-triggers { display: flex; gap: 4px; flex-wrap: wrap; }
-.ws-wh-tag {
-  font-size: 10px; padding: 2px 7px; border-radius: 4px;
-  background: var(--olive-pale); color: var(--olive-dark); font-weight: 600;
+.ws-wh-search-input {
+  flex: 1; border: none; background: none; outline: none;
+  font-size: 13px; color: var(--ink1); font-family: inherit;
 }
-.ws-wh-chat-btn {
-  margin-top: 4px; padding: 7px 0; border: none; border-radius: 8px;
-  background: var(--olive); color: #fff; font-size: 12px; font-weight: 700;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-  gap: 4px; font-family: inherit; transition: transform .1s;
+/* 分组 */
+.ws-wh-group { border-bottom: 1px solid var(--line); }
+.ws-wh-group-head {
+  display: flex; align-items: center; gap: 4px;
+  padding: 8px 16px; cursor: pointer; user-select: none;
+  font-size: 12px; font-weight: 700; color: var(--ink3);
 }
-.ws-wh-chat-btn:hover { transform: scale(1.02); }
+.ws-wh-group-head:hover { background: var(--bg); }
+.ws-wh-chevron { font-size: 18px; transition: transform .15s; }
+.ws-wh-chevron.collapsed { transform: rotate(-90deg); }
+.ws-wh-count {
+  margin-left: auto; font-size: 10px; padding: 1px 6px;
+  border-radius: 8px; background: var(--line); color: var(--ink3);
+}
+.ws-wh-group-body { padding: 0 8px 6px; }
+/* 搭子项 */
+.ws-wh-item {
+  padding: 8px 12px; border-radius: 8px; cursor: pointer;
+  transition: all .12s; margin-bottom: 2px;
+}
+.ws-wh-item:hover { background: var(--bg); }
+.ws-wh-item.active { background: rgba(107,142,35,.08); }
+.ws-wh-item-name { font-size: 13px; font-weight: 700; color: var(--ink1); }
+.ws-wh-item-desc { font-size: 11px; color: var(--ink3); margin-top: 2px; }
+.ws-wh-empty { text-align: center; padding: 16px; font-size: 12px; color: var(--ink3); }
+
+/* ─── 右键菜单 ─── */
+.ws-ctx-overlay { position: fixed; inset: 0; z-index: 9999; }
+.ws-ctx-menu {
+  position: fixed; min-width: 150px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.15);
+}
+.ws-ctx-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 12px; border: none; border-radius: 6px;
+  background: none; font-size: 13px; color: var(--ink1);
+  cursor: pointer; font-family: inherit; transition: background .1s;
+}
+.ws-ctx-item .mso { font-size: 16px; color: var(--ink3); }
+.ws-ctx-item:hover { background: var(--bg); }
+.ws-ctx-danger { color: #c0392b; }
+.ws-ctx-danger .mso { color: #c0392b; }
 
 /* Evolution overlay */
 .ws-evo-overlay {
