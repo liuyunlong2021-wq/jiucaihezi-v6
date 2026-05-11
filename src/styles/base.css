@@ -9,20 +9,18 @@
   src: url('/fonts/material-symbols-outlined.woff2') format('woff2');
 }
 
-/* Noto Serif SC — 中文衬线（CDN 备用，本地优先） */
+/* Noto Serif SC — 中文衬线（仅系统字体检测，无需下载） */
 @font-face {
   font-family: 'Noto Serif SC';
   font-weight: 400;
   font-display: swap;
-  src: local('Noto Serif SC'), local('NotoSerifSC-Regular'),
-       url('/fonts/noto-serif-sc-400.woff2') format('woff2');
+  src: local('Noto Serif SC'), local('NotoSerifSC-Regular');
 }
 @font-face {
   font-family: 'Noto Serif SC';
   font-weight: 700;
   font-display: swap;
-  src: local('Noto Serif SC Bold'), local('NotoSerifSC-Bold'),
-       url('/fonts/noto-serif-sc-700.woff2') format('woff2');
+  src: local('Noto Serif SC Bold'), local('NotoSerifSC-Bold');
 }
 
 /* Inter — 英文正文（本地离线） */
