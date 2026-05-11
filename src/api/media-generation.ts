@@ -1,6 +1,16 @@
 /**
- * api/media-generation.ts — 移植自 V5 生产验证版
- * 唯一改动：API 配置从 useNewChatStore → localStorage
+ * api/media-generation.ts — 终极版（基于 NewAPI 源码验证）
+ *
+ * 路由表（来自 MYnewapi/router/ 源码验证）：
+ * ┌─────────────────┬──────────────────────────────┬─────────────────────────────────┐
+ * │ 模型            │ 提交                          │ 轮询                             │
+ * ├─────────────────┼──────────────────────────────┼─────────────────────────────────┤
+ * │ gpt-image-2     │ POST /v1/images/generations   │ 同步（无需轮询）                  │
+ * │ gpt-image-2 编辑│ POST /v1/images/edits         │ 同步                             │
+ * │ grok / veo      │ POST /v1/video/generations     │ GET /v1/video/generations/:id    │
+ * │ seedance        │ POST /v1/videos                │ GET /v1/videos/:id               │
+ * │ suno            │ POST /suno/submit/music         │ GET /suno/fetch/:id              │
+ * └─────────────────┴──────────────────────────────┴─────────────────────────────────┘
  */
 
 // ---- Types ----
@@ -10,7 +20,7 @@ export interface ImageGenParams {
   size?: string
   aspectRatio?: string
   resolution?: string
-  image?: string        // base64 data URL for image-to-image
+  image?: string        // base64 data URL or File blob for image-to-image
 }
 
 export interface VideoGenParams {
@@ -28,23 +38,23 @@ export interface MediaResult {
   taskId?: string
 }
 
-// ---- Helpers ----
+// ---- API Config ----
 
-function getApiConfig() {
-  return {
-    baseUrl: 'https://api.jiucaihezi.studio',
-    apiKey: localStorage.getItem('jcApiKey') || '',
-  }
+const BASE_URL = 'https://api.jiucaihezi.studio'
+
+function getApiKey(): string {
+  return localStorage.getItem('jcApiKey') || ''
 }
 
-function getHeaders(apiKey: string) {
+function authHeaders(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${apiKey}`,
+    'Authorization': `Bearer ${getApiKey()}`,
   }
 }
 
-/** GPT Size Mapping — V5 原样复制 */
+// ---- Size Mapping (V4/V5 verified) ----
+
 function mapGptImageSize(ar: string, res?: string): string {
   const is4k = res === '4k'
   const is2k = res === '2k'
@@ -59,23 +69,8 @@ function mapGptImageSize(ar: string, res?: string): string {
   }
 }
 
-/** 多层 task_id 提取 — V5 原样复制 */
-function extractTaskId(data: any): string {
-  if (typeof data?.data === 'string' && data.data.length > 0) return data.data
-  const d = data?.data
-  if (d && !Array.isArray(d)) {
-    const v = d.task_id || d.taskId || d.id
-    if (v) return String(v)
-  }
-  if (Array.isArray(d) && d[0]) {
-    const v = d[0].task_id || d[0].taskId || d[0].id
-    if (v) return String(v)
-  }
-  const direct = data?.task_id || data?.taskId || data?.id
-  return direct ? String(direct) : ''
-}
+// ---- Extractors (V5 production-proven, deep recursive) ----
 
-/** 深度递归提取媒体 URL — V5 原样复制 */
 function extractMediaUrl(payload: any, kind: 'image' | 'video' | 'audio' = 'image'): string {
   function pick(obj: any): string {
     if (!obj || typeof obj !== 'object') return ''
@@ -99,6 +94,7 @@ function extractMediaUrl(payload: any, kind: 'image' | 'video' | 'audio' = 'imag
     }
     return ''
   }
+
   const data = payload?.data
   if (Array.isArray(data)) {
     for (const item of data) {
@@ -129,6 +125,19 @@ function extractMediaUrl(payload: any, kind: 'image' | 'video' | 'audio' = 'imag
   return ''
 }
 
+function extractTaskId(data: any): string {
+  if (typeof data?.data === 'string' && data.data.length > 0) return data.data
+  const d = data?.data
+  if (d && !Array.isArray(d)) {
+    const v = d.task_id || d.taskId || d.id; if (v) return String(v)
+  }
+  if (Array.isArray(d) && d[0]) {
+    const v = d[0].task_id || d[0].taskId || d[0].id; if (v) return String(v)
+  }
+  const direct = data?.task_id || data?.taskId || data?.id
+  return direct ? String(direct) : ''
+}
+
 function extractStatus(data: any): string {
   const d = data?.data
   return String(
@@ -138,15 +147,14 @@ function extractStatus(data: any): string {
   )
 }
 
-// ---- Core API Functions ----
+// ---- Core Fetch Helpers ----
 
 async function apiCall(path: string, body: any | null, method = 'POST'): Promise<any> {
-  const { baseUrl, apiKey } = getApiConfig()
-  if (!apiKey) throw new Error('请先配置 API Key')
-  const hdrs = getHeaders(apiKey)
-  const opts: RequestInit = { method, headers: hdrs }
+  const key = getApiKey()
+  if (!key) throw new Error('请先配置 API Key')
+  const opts: RequestInit = { method, headers: authHeaders() }
   if (method !== 'GET' && body) opts.body = JSON.stringify(body)
-  const res = await fetch(`${baseUrl}${path}`, opts)
+  const res = await fetch(`${BASE_URL}${path}`, opts)
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
@@ -155,16 +163,16 @@ async function apiCall(path: string, body: any | null, method = 'POST'): Promise
 }
 
 async function apiCallMultipart(path: string, fields: Record<string, string | Blob>): Promise<any> {
-  const { baseUrl, apiKey } = getApiConfig()
-  if (!apiKey) throw new Error('请先配置 API Key')
+  const key = getApiKey()
+  if (!key) throw new Error('请先配置 API Key')
   const formData = new FormData()
-  for (const [key, value] of Object.entries(fields)) {
-    if (value instanceof Blob) formData.append(key, value, 'image.png')
-    else formData.append(key, value)
+  for (const [k, v] of Object.entries(fields)) {
+    if (v instanceof Blob) formData.append(k, v, 'image.png')
+    else formData.append(k, v)
   }
-  const res = await fetch(`${baseUrl}${path}`, {
+  const res = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${apiKey}` },
+    headers: { 'Authorization': `Bearer ${key}` },
     body: formData,
   })
   if (!res.ok) {
@@ -183,7 +191,8 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime })
 }
 
-/** 统一轮询 — V5 原样复制 */
+// ---- Unified Task Poller ----
+
 async function pollTask(
   pollPath: string,
   kind: 'image' | 'video' | 'audio',
@@ -210,88 +219,62 @@ async function pollTask(
   throw new Error(`生成超时 (${Math.round(maxPollsSec / 60)}分钟)`)
 }
 
-// ---- Public API (V5 原样复制) ----
+// ======================================================================
+// PUBLIC API
+// ======================================================================
 
+/**
+ * 生成图片 — gpt-image-2
+ * 同步模式：NewAPI 服务端等待 T8 返回（Go 协程无超时限制）
+ * 路由: POST /v1/images/generations 或 /v1/images/edits
+ */
 export async function generateImage(
   params: ImageGenParams,
   onProgress?: (elapsed: number, status: string) => void,
 ): Promise<MediaResult> {
   const { model, prompt, image, aspectRatio, resolution } = params
-  let path: string
-  let body: any
 
-  if (model === 'gpt-image-2') {
+  if (model === 'gpt-image-2' && image) {
+    // ── 以图生图 → multipart /v1/images/edits ──
     const size = mapGptImageSize(aspectRatio || '1:1', resolution)
-    if (image) {
-      const fields: Record<string, string | Blob> = {
-        model, prompt, size, response_format: 'url',
-      }
-      if (image.startsWith('data:')) {
-        fields.image = dataUrlToBlob(image)
-      } else {
-        try { const imgRes = await fetch(image); fields.image = await imgRes.blob() }
-        catch { fields.image = image }
-      }
-      path = '/v1/images/edits'
-      const data = await apiCallMultipart(path, fields)
-      let mediaUrl = extractMediaUrl(data, 'image')
-      if (!mediaUrl) {
-        const taskId = extractTaskId(data)
-        if (taskId) {
-          mediaUrl = await pollTask(`/v1/images/generations/${taskId}`, 'image', onProgress)
-        }
-      }
-      if (!mediaUrl) throw new Error('以图生图未获取到结果')
-      return { url: mediaUrl, type: 'image' }
+    const fields: Record<string, string | Blob> = {
+      model, prompt, size, response_format: 'url',
+    }
+    if (image.startsWith('data:')) {
+      fields.image = dataUrlToBlob(image)
     } else {
-      path = '/v1/images/generations'
-      body = { model, prompt, n: 1, size, response_format: 'url' }
+      try { const imgRes = await fetch(image); fields.image = await imgRes.blob() }
+      catch { fields.image = image }
     }
-  } else {
-    const size = aspectRatio ? mapGptImageSize(aspectRatio, resolution) : '1024x1024'
-    path = '/v1/images/generations'
-    body = { model, prompt, n: 1, size, response_format: 'url' }
+    const data = await apiCallMultipart('/v1/images/edits', fields)
+    const mediaUrl = extractMediaUrl(data, 'image')
+    if (!mediaUrl) throw new Error('以图生图未获取到结果')
+    return { url: mediaUrl, type: 'image' }
   }
 
-  const data = await apiCall(path, body)
-  let mediaUrl = extractMediaUrl(data, 'image')
-
-  // ★ V5 策略: 先尝试同步拿 URL，拿不到才轮询
-  if (!mediaUrl) {
-    const taskId = extractTaskId(data)
-    if (taskId) {
-      mediaUrl = await pollTask(`/v1/images/generations/${taskId}`, 'image', onProgress)
-    }
-  }
-  if (!mediaUrl) throw new Error('未获取到图像结果')
+  // ── 文生图 → JSON /v1/images/generations ──
+  const size = mapGptImageSize(aspectRatio || '1:1', resolution)
+  const body: any = { model, prompt, n: 1, size, response_format: 'url' }
+  onProgress?.(0, '提交中')
+  const data = await apiCall('/v1/images/generations', body)
+  const mediaUrl = extractMediaUrl(data, 'image')
+  if (!mediaUrl) throw new Error('未获取到图像结果（响应: ' + JSON.stringify(data).slice(0, 200) + '）')
   return { url: mediaUrl, type: 'image' }
 }
 
+/**
+ * 生成视频 — grok-video-3 / veo3.1 / seedance
+ *
+ * grok/veo → POST /v1/video/generations → GET /v1/video/generations/:id
+ * seedance → POST /v1/videos → GET /v1/videos/:id
+ */
 export async function generateVideo(
   params: VideoGenParams,
   onProgress?: (elapsed: number, status: string) => void,
 ): Promise<MediaResult> {
   const { model, prompt, aspectRatio, resolution, duration, imageUrl } = params
 
-  // Grok video
-  if (model.startsWith('grok-video')) {
-    const body: any = { model, prompt }
-    if (aspectRatio) body.ratio = aspectRatio
-    if (resolution) body.resolution = resolution.toUpperCase()
-    if (duration) body.duration = Number(duration)
-    if (imageUrl) body.images = [imageUrl]
-
-    const data = await apiCall('/v2/videos/generations', body)
-    let mediaUrl = extractMediaUrl(data, 'video')
-    if (!mediaUrl) {
-      const taskId = extractTaskId(data)
-      if (taskId) mediaUrl = await pollTask(`/v2/videos/generations/${taskId}`, 'video', onProgress, 3000, 15000)
-    }
-    if (!mediaUrl) throw new Error('Grok 视频生成失败')
-    return { url: mediaUrl, type: 'video' }
-  }
-
-  // Seedance
+  // ── Seedance 系列 → /v1/videos ──
   if (model.startsWith('seedance')) {
     const body: any = { model, prompt, duration: Number(duration) || 5, ratio: aspectRatio || '16:9' }
     if (imageUrl) { body.reference_mode = 'omni_reference'; body.image_file_1 = imageUrl }
@@ -306,57 +289,103 @@ export async function generateVideo(
     return { url: mediaUrl, type: 'video' }
   }
 
-  // Veo / Other: generic v2 endpoint
+  // ── Grok / Veo / 其他 → /v1/video/generations ──
   const body: any = { model, prompt }
   if (aspectRatio) body.ratio = aspectRatio
   if (resolution) body.resolution = resolution.toUpperCase()
   if (duration) body.duration = Number(duration)
   if (imageUrl) body.images = [imageUrl]
 
-  const data = await apiCall('/v2/videos/generations', body)
+  const data = await apiCall('/v1/video/generations', body)
   let mediaUrl = extractMediaUrl(data, 'video')
   if (!mediaUrl) {
     const taskId = extractTaskId(data)
-    if (taskId) mediaUrl = await pollTask(`/v2/videos/generations/${taskId}`, 'video', onProgress, 3000, 15000)
+    if (taskId) mediaUrl = await pollTask(`/v1/video/generations/${taskId}`, 'video', onProgress, 3000, 15000)
   }
-  if (!mediaUrl) throw new Error('未获取到视频结果')
+  if (!mediaUrl) throw new Error('视频生成失败')
   return { url: mediaUrl, type: 'video' }
 }
 
+/**
+ * 生成音乐 — Suno 5.5
+ * POST /suno/submit/music → GET /suno/fetch/:id
+ */
 export async function generateAudio(prompt: string): Promise<MediaResult> {
-  const { baseUrl, apiKey } = getApiConfig()
-  if (!apiKey) throw new Error('请先配置 API Key')
+  const key = getApiKey()
+  if (!key) throw new Error('请先配置 API Key')
 
-  const body = { gpt_description_prompt: prompt, mv: 'chirp-v4' }
-  const submitRes = await fetch(`${baseUrl}/suno/generate`, {
-    method: 'POST', headers: getHeaders(apiKey), body: JSON.stringify(body),
+  // Step 1: 提交 → /suno/submit/music (NewAPI relay-router.go:184)
+  const body = { gpt_description_prompt: prompt, mv: 'chirp-fenix' }
+  const submitRes = await fetch(`${BASE_URL}/suno/submit/music`, {
+    method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
   })
   if (!submitRes.ok) {
     const errText = await submitRes.text().catch(() => '')
     throw new Error(`Suno 提交失败 (${submitRes.status}): ${errText.slice(0, 200)}`)
   }
   const submitData = await submitRes.json()
-  const clips = submitData?.clips || submitData?.data?.clips || []
-  if (clips.length === 0) throw new Error('Suno 未返回音乐片段')
-  const clipIds = clips.map((c: any) => c.id).join(',')
 
+  // 提取 task_id — NewAPI 的 RelayTask 返回格式
+  const taskId = extractTaskId(submitData)
+  if (!taskId) {
+    // 也尝试 clips 格式（兼容）
+    const clips = submitData?.clips || submitData?.data?.clips || []
+    if (clips.length === 0) throw new Error('Suno 未返回任务 ID 或 clips')
+    // Fallback: 用 clips[0].id 轮询
+    const clipId = clips[0]?.id
+    if (clipId) {
+      return await pollSunoByClipId(clipId)
+    }
+    throw new Error('Suno 未返回有效的任务标识')
+  }
+
+  // Step 2: 轮询 → /suno/fetch/:id (NewAPI relay-router.go:186)
   for (let i = 0; i < 120; i++) {
     await new Promise(r => setTimeout(r, 5000))
-    const pollRes = await fetch(`${baseUrl}/suno/feed/${clipIds}`, {
-      method: 'GET', headers: getHeaders(apiKey),
+    const pollRes = await fetch(`${BASE_URL}/suno/fetch/${taskId}`, {
+      method: 'GET', headers: authHeaders(),
     })
     if (!pollRes.ok) continue
     const pollData = await pollRes.json()
-    const feedClips = Array.isArray(pollData) ? pollData : (pollData?.data || [])
-    for (const clip of feedClips) {
+
+    // RelayTaskFetch 可能返回单个对象或数组
+    const items = Array.isArray(pollData) ? pollData
+      : Array.isArray(pollData?.data) ? pollData.data
+      : pollData?.data ? [pollData.data] : [pollData]
+
+    for (const clip of items) {
+      const status = String(clip.status || '').toLowerCase()
+      if (status === 'complete' || status === 'completed' || status === 'success') {
+        const audioUrl = clip.audio_url || clip.video_url || extractMediaUrl(clip, 'audio')
+        if (audioUrl) return { url: audioUrl, type: 'audio' }
+      }
+      if (status === 'error' || status === 'failed') {
+        throw new Error(clip.error_message || clip.fail_reason || 'Suno 生成失败')
+      }
+    }
+  }
+  throw new Error('Suno 生成超时（10分钟）')
+}
+
+/** Fallback: 用 clip ID 直接轮询（兼容旧 API） */
+async function pollSunoByClipId(clipId: string): Promise<MediaResult> {
+  for (let i = 0; i < 120; i++) {
+    await new Promise(r => setTimeout(r, 5000))
+    const res = await fetch(`${BASE_URL}/suno/fetch/${clipId}`, {
+      method: 'GET', headers: authHeaders(),
+    })
+    if (!res.ok) continue
+    const data = await res.json()
+    const items = Array.isArray(data) ? data : data?.data ? [data.data] : [data]
+    for (const clip of items) {
       if (clip.status === 'complete' || clip.status === 'completed') {
         const audioUrl = clip.audio_url || clip.video_url
         if (audioUrl) return { url: audioUrl, type: 'audio' }
       }
       if (clip.status === 'error' || clip.status === 'failed') {
-        throw new Error(clip.error_message || 'Suno 音乐生成失败')
+        throw new Error(clip.error_message || 'Suno 生成失败')
       }
     }
   }
-  throw new Error('Suno 音乐生成超时')
+  throw new Error('Suno 生成超时')
 }

@@ -32,7 +32,7 @@ export const RH_TASK_LABELS: Record<CreationTask, string> = {
 export interface CreationModel {
   label: string
   tasks: CreationTask[]
-  provider: 'newapi-image' | 'newapi-video' | 'sd2' | 'newapi-suno'
+  provider: 'newapi-image' | 'newapi-video' | 'newapi-suno'
   modelName: string
   /** 图片 size 选项 */
   sizes?: string[]
@@ -85,7 +85,7 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
     tasks: ['text-video', 'image-video'],
     provider: 'newapi-video',
     modelName: 'veo3.1-fast',
-    // 走 v2/videos/generations 格式
+    // 走 /v1/video/generations 格式
     ar: ['16:9', '9:16'],
     defAr: '16:9',
     dur: [8],
@@ -96,7 +96,7 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
   'seedance-2.0': {
     label: 'Seedance 2.0',
     tasks: ['text-video', 'image-video'],
-    provider: 'sd2',
+    provider: 'newapi-video',
     modelName: 'seedance-2.0',
     // seedance-2.0-fast-use-guide.md
     ar: ['4:3', '16:9', '9:16', '1:1', '21:9', '3:4', '2:3', '3:2'],
@@ -109,7 +109,7 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
   'seedance-2.0-fast': {
     label: 'Seedance 2.0 Fast',
     tasks: ['text-video', 'image-video'],
-    provider: 'sd2',
+    provider: 'newapi-video',
     modelName: 'seedance-2.0-fast',
     // seedance-2.0-fast-use-guide.md
     ar: ['4:3', '16:9', '9:16', '1:1', '21:9', '3:4', '2:3', '3:2'],
