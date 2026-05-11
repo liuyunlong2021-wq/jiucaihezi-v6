@@ -15,6 +15,9 @@ import { useAgentStore, PILL_MODELS } from '@/stores/agentStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSkillRouter } from '@/composables/useSkillRouter'
 import { ingestConversation } from '@/composables/useBrain'
+import MessageBubble from './MessageBubble.vue'
+import FileUploader from './FileUploader.vue'
+import ChatScrollNav from './ChatScrollNav.vue'
 
 const agentStore = useAgentStore()
 const sessionStore = useSessionStore()
@@ -30,6 +33,23 @@ const {
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const showModelMenu = ref(false)
+const fileUploader = ref<InstanceType<typeof FileUploader> | null>(null)
+const scrollNav = ref<InstanceType<typeof ChatScrollNav> | null>(null)
+
+// 输入历史回填 (V4 stepChatInputRecall 行 7714)
+const recallState = ref({ index: -1, draft: '' })
+function stepInputRecall(direction: number) {
+  const pool = messages.value.filter(m => m.role === 'user').map(m => m.content)
+  if (!pool.length) return
+  const state = recallState.value
+  if (state.index === -1) state.draft = inputText.value
+  let next = state.index + direction
+  if (next < -1) next = -1
+  if (next >= pool.length) next = pool.length - 1
+  recallState.value = { index: next, draft: state.draft }
+  inputText.value = next === -1 ? state.draft : pool[pool.length - 1 - next]
+}
+function resetRecall() { recallState.value = { index: -1, draft: '' } }
 
 // 学习开关 — 开启后调用 karpathy-llm-wiki 持续摄入对话
 const learningEnabled = ref(localStorage.getItem('jc_learning') === 'true')
@@ -55,9 +75,7 @@ let currentSessionId = ''
 // 自动滚动到底部
 watch(messages, () => {
   nextTick(() => {
-    if (messagesContainer.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-    }
+    scrollNav.value?.autoScrollIfNeeded()
   })
 }, { deep: true })
 
@@ -184,11 +202,32 @@ function selectModel(modelId: string) {
   showModelMenu.value = false
 }
 
-// 键盘事件
+// 键盘事件 (V4 chatKeydown 行 10678)
 function onKeydown(e: KeyboardEvent) {
+  // Cmd/Ctrl+Shift+↑↓ → 输入历史回填
+  if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    e.preventDefault()
+    stepInputRecall(e.key === 'ArrowUp' ? 1 : -1)
+    return
+  }
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault()
     handleSend()
+  }
+}
+
+// 删除消息
+function deleteMessage(index: number) {
+  messages.value.splice(index, 1)
+}
+
+// 重新发送
+function retryMessage(index: number) {
+  const msg = messages.value[index]
+  if (msg && msg.role === 'user') {
+    // 删除该消息及之后的所有消息
+    messages.value.splice(index)
+    inputText.value = msg.content
   }
 }
 
@@ -272,34 +311,28 @@ onMounted(() => {
     </div>
 
     <!-- Messages -->
-    <div ref="messagesContainer" class="cp-messages">
-      <!-- Welcome state -->
+    <!-- 消息区 (带滚动导航) -->
+    <div ref="messagesContainer" class="cp-messages"
+         @dragover.prevent="fileUploader?.handleDragOver($event)"
+         @dragleave.prevent="fileUploader?.handleDragLeave($event)"
+         @drop.prevent="fileUploader?.handleDrop($event)">
+      <!-- Welcome -->
       <div v-if="messages.length === 0" class="cp-welcome">
         <h2 class="serif">韭菜盒子</h2>
         <p>聊天用豆包，干活用韭菜盒子。</p>
       </div>
 
-      <!-- Message list -->
-      <div
-        v-for="msg in messages"
+      <!-- Message list (使用 MessageBubble 组件) -->
+      <MessageBubble
+        v-for="(msg, i) in messages"
         :key="msg.id"
-        class="msg"
-        :class="msg.role"
-      >
-        <div class="msg-meta">
-          <div class="msg-meta-avatar">
-            <span class="mso" style="font-size: 14px;">
-              {{ msg.role === 'user' ? 'person' : 'smart_toy' }}
-            </span>
-          </div>
-          <span class="msg-meta-name">
-            {{ msg.role === 'user' ? '你' : (msg.agentName || '助手') }}
-          </span>
-        </div>
-        <div class="msg-bubble">
-          <div class="msg-body" v-html="msg.content.replace(/\n/g, '<br>')"></div>
-        </div>
-      </div>
+        :content="msg.content"
+        :role="msg.role"
+        :agent-name="msg.agentName"
+        :index="i"
+        @retry="retryMessage"
+        @delete="deleteMessage"
+      />
 
       <!-- Streaming indicator -->
       <div v-if="isStreaming && messages.length > 0 && !messages[messages.length - 1]?.content" class="msg assistant">
@@ -311,20 +344,27 @@ onMounted(() => {
           <span class="typing-dot" /><span class="typing-dot" /><span class="typing-dot" />
         </div>
       </div>
+
+      <!-- 滚动导航 -->
+      <ChatScrollNav ref="scrollNav" :container="messagesContainer" :is-streaming="isStreaming" />
     </div>
 
-    <!-- Input — from code.html #chat-input-area (行 1126-1168) -->
+    <!-- 附件预览 -->
+    <FileUploader ref="fileUploader" />
+
+    <!-- 输入区 -->
     <div class="cp-input-area">
       <div class="cp-input-wrap">
         <textarea
           v-model="inputText"
-          placeholder="给搭子发指令... (Cmd/Ctrl+Enter发送)"
+          placeholder="给搭子发指令... (Cmd/Ctrl+Enter发送, Cmd+Shift+↑↓回填历史)"
           rows="1"
           @keydown="onKeydown"
           @input="handleInput"
+          @paste="fileUploader?.handlePaste($event)"
         />
         <div class="cp-input-actions">
-          <button class="ci-btn" title="附件">
+          <button class="ci-btn" title="上传文件" @click="fileUploader?.triggerFileInput()">
             <span class="mso">attach_file</span>
           </button>
           <button
@@ -449,6 +489,7 @@ onMounted(() => {
   overflow-y: auto;
   padding: 18px 16px 16px;
   min-height: 0;
+  position: relative;
 }
 .msg {
   display: flex;
