@@ -59,7 +59,7 @@ export interface SkillConfig {
   // ─── 元信息 ───
   id: string
   version: number
-  source: 'preset' | 'user' | 'github' | 'evolved'
+  source: 'preset' | 'user' | 'github' | 'evolved' | 'superpower'
   githubUrl?: string
   createdAt: number
   updatedAt: number

@@ -1,25 +1,49 @@
 /**
- * composables/useSkillRouter.ts — superpowers 路由引擎
+ * composables/useSkillRouter.ts — Superpowers 完全体引擎
  *
- * 完全体实现 superpowers 的 skill dispatch 模式：
- *   - 扫描所有已安装 skill 的 name + description + triggers
- *   - LLM 语义分析用户意图
- *   - 支持单 skill 路由 + 多 skill 协作链（chain）
+ * 完整移植 obra/superpowers 的全部能力：
+ *   1. Session Hook — 对话开始时注入 bootstrap prompt
+ *   2. Skill Dispatch — LLM 语义路由 + 完整 SKILL.md 注入
+ *   3. Chain Invoke — 检测 [INVOKE:xxx] 自动流转
+ *   4. Phase Gate — HARD-GATE 强制执行
+ *   5. Pipeline Tracking — 追踪当前阶段
  *
- * @see https://github.com/obra/superpowers — skill dispatch 架构
+ * @see https://github.com/obra/superpowers
  */
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { resolveApiConfig, buildHeaders } from '@/utils/api'
 import type { SkillConfig, RouteResult } from '@/types/skill'
+import {
+  SUPERPOWER_META,
+  buildSessionHookPrompt,
+  detectChainInvoke,
+  getSkillPhase,
+  type SuperpowerMeta,
+} from '@/data/superpowerSkills'
 
+// ─── 状态 ───
 const lastRouteResult = ref<RouteResult | null>(null)
 const isRouting = ref(false)
 const routeNotification = ref('')
 
+// ─── Superpowers Pipeline 状态 ───
+const currentPhase = ref(0)           // 当前阶段 (1-7), 0=未激活
+const currentSkillId = ref('')        // 当前激活的 skill id
+const pendingInvoke = ref('')         // 待用户确认的 chain invoke
+const pipelineActive = ref(false)     // pipeline 是否激活
+const phaseHistory = ref<string[]>([]) // 已经过的阶段
+
+// ─── Pipeline 信息（供 UI 消费） ───
+const PIPELINE_STAGES = [
+  { id: 'sp_brainstorming', name: '头脑风暴', icon: 'psychology' },
+  { id: 'sp_writing_plans', name: '写计划', icon: 'assignment' },
+  { id: 'sp_subagent_exec', name: '分步执行', icon: 'rocket_launch' },
+  { id: 'sp_code_review',   name: '代码审查', icon: 'rate_review' },
+  { id: 'sp_verification',  name: '验证确认', icon: 'verified' },
+]
+
 /**
- * 构建路由 system prompt
- * 参考 superpowers: "The agent checks for relevant skills before any task.
- * Mandatory workflows, not suggestions."
+ * 构建路由 system prompt（用于 LLM 判断意图）
  */
 function buildRouterPrompt(skills: SkillConfig[]): string {
   const skillList = skills.map((s, i) => {
@@ -40,10 +64,11 @@ ${skillList}
 
 ## 路由规则
 1. **单 skill 路由（single）**：如果请求明确属于某个搭子的职责范围，直接路由到该搭子。
-2. **多 skill 协作（chain）**：如果请求需要多个搭子配合完成，按执行顺序列出。例如：先用"写作"搭子写内容，再用"PPT设计师"搭子排版。
+2. **多 skill 协作（chain）**：如果请求需要多个搭子配合完成，按执行顺序列出。例如：先用"头脑风暴"搭子设计，再用"写计划"搭子规划。
 3. **无匹配（none）**：如果没有搭子能处理，返回 none。
-4. 优先匹配 triggers 关键词，但也要理解语义。例如用户说"帮我做个汇报材料"应匹配"PPT设计师"。
+4. 优先匹配 triggers 关键词，但也要理解语义。
 5. 每个匹配必须说明理由。
+6. 如果匹配到 superpowers 系列技能（id 以 sp_ 开头），应优先触发 sp_brainstorming 开始完整流程。
 
 ## 输出格式
 严格输出 JSON（不要 markdown 代码块）：
@@ -51,10 +76,33 @@ ${skillList}
 }
 
 /**
+ * 构建完整的 superpowers system prompt
+ * = session hook + 当前 skill 的完整 SKILL.md
+ */
+export function buildSuperpowersPrompt(
+  allSkills: SkillConfig[],
+  activeSkill: SkillConfig | null
+): string {
+  const parts: string[] = []
+
+  // 1. Session Hook（始终注入）
+  parts.push(buildSessionHookPrompt(allSkills))
+
+  // 2. 当前激活 skill 的完整工作流指令
+  if (activeSkill) {
+    parts.push(`\n\n---\n\n## 当前激活技能: ${activeSkill.name}\n\n${activeSkill.skillContent}`)
+  }
+
+  // 3. Pipeline 上下文
+  if (pipelineActive.value && phaseHistory.value.length > 0) {
+    parts.push(`\n\n## Pipeline 状态\n已完成阶段: ${phaseHistory.value.join(' → ')}\n当前阶段: ${currentSkillId.value}`)
+  }
+
+  return parts.join('\n')
+}
+
+/**
  * 执行路由分析
- * @param userMessage 用户消息
- * @param allSkills 所有已安装搭子
- * @returns RouteResult
  */
 export async function routeMessage(
   userMessage: string,
@@ -93,22 +141,33 @@ export async function routeMessage(
     const data = await res.json()
     const text = data.choices?.[0]?.message?.content || ''
 
-    // 解析 JSON
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (jsonMatch) {
       const result: RouteResult = JSON.parse(jsonMatch[0])
       lastRouteResult.value = result
 
-      // 生成通知文案
+      // 生成通知 + 激活 pipeline
       if (result.strategy === 'single' && result.matched.length > 0) {
         const skill = allSkills.find(s => s.id === result.matched[0].skillId)
         routeNotification.value = `🔀 已切换 → ${skill?.name || result.matched[0].skillId}`
+
+        // 如果匹配到 superpowers skill，激活 pipeline
+        const meta = getSkillPhase(result.matched[0].skillId)
+        if (meta) {
+          activatePipeline(result.matched[0].skillId, meta)
+        }
       } else if (result.strategy === 'chain' && result.matched.length > 1) {
         const names = result.matched.map(m => {
           const s = allSkills.find(sk => sk.id === m.skillId)
           return s?.name || m.skillId
         })
         routeNotification.value = `🔗 协作链 → ${names.join(' → ')}`
+
+        // 激活第一个 skill
+        const firstMeta = getSkillPhase(result.matched[0].skillId)
+        if (firstMeta) {
+          activatePipeline(result.matched[0].skillId, firstMeta)
+        }
       } else {
         routeNotification.value = ''
       }
@@ -123,6 +182,73 @@ export async function routeMessage(
   } finally {
     isRouting.value = false
   }
+}
+
+/**
+ * 激活 superpowers pipeline
+ */
+function activatePipeline(skillId: string, meta: SuperpowerMeta) {
+  pipelineActive.value = true
+  currentSkillId.value = skillId
+  currentPhase.value = meta.phase
+  if (!phaseHistory.value.includes(skillId)) {
+    phaseHistory.value.push(skillId)
+  }
+}
+
+/**
+ * 处理 AI 回复中的 chain invoke
+ * @returns 待确认的 skill id，或 null（无 chain invoke）
+ */
+export function processChainInvoke(aiReply: string): string | null {
+  const invokeId = detectChainInvoke(aiReply)
+  if (!invokeId) return null
+
+  const meta = getSkillPhase(invokeId)
+  if (!meta) return null
+
+  // 设置待确认状态（等用户确认）
+  pendingInvoke.value = invokeId
+  return invokeId
+}
+
+/**
+ * 用户确认 chain invoke → 激活下一个 skill
+ */
+export function confirmChainInvoke(allSkills: SkillConfig[]): SkillConfig | null {
+  const skillId = pendingInvoke.value
+  if (!skillId) return null
+
+  pendingInvoke.value = ''
+  const skill = allSkills.find(s => s.id === skillId)
+  if (!skill) return null
+
+  const meta = getSkillPhase(skillId)
+  if (meta) {
+    activatePipeline(skillId, meta)
+  }
+
+  routeNotification.value = `⏭️ 进入阶段 → ${skill.name}`
+  return skill
+}
+
+/**
+ * 用户拒绝 chain invoke
+ */
+export function rejectChainInvoke() {
+  pendingInvoke.value = ''
+}
+
+/**
+ * 重置 pipeline（新对话时）
+ */
+export function resetPipeline() {
+  currentPhase.value = 0
+  currentSkillId.value = ''
+  pendingInvoke.value = ''
+  pipelineActive.value = false
+  phaseHistory.value = []
+  routeNotification.value = ''
 }
 
 /**
@@ -147,10 +273,23 @@ ${parts.join('\n\n')}
 
 export function useSkillRouter() {
   return {
+    // 原有
     lastRouteResult,
     isRouting,
     routeNotification,
     routeMessage,
     buildChainPrompt,
+    // Superpowers 新增
+    currentPhase,
+    currentSkillId,
+    pendingInvoke,
+    pipelineActive,
+    phaseHistory,
+    PIPELINE_STAGES,
+    buildSuperpowersPrompt,
+    processChainInvoke,
+    confirmChainInvoke,
+    rejectChainInvoke,
+    resetPipeline,
   }
 }

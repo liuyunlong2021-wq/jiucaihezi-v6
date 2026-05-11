@@ -10,6 +10,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { SkillConfig } from '../types/skill'
 import { migrateAgentToSkill, parseSkillMd } from '../types/skill'
+import { SUPERPOWER_SKILLS } from '@/data/superpowerSkills'
 
 // ─── 向后兼容：旧 Agent 类型（迁移用） ───
 export interface Agent {
@@ -393,7 +394,7 @@ export const useAgentStore = defineStore('agents', () => {
         }
       }
     } catch { custom = [] }
-    return SKILL_PRESETS.concat(custom)
+    return SKILL_PRESETS.concat(SUPERPOWER_SKILLS).concat(custom)
   }
 
   // ─── getCustomSkills ───
@@ -498,6 +499,6 @@ export const useAgentStore = defineStore('agents', () => {
     toggleRouter,
     importFromText,
     importFromJSON,
-    PRESETS: SKILL_PRESETS,
+    PRESETS: SKILL_PRESETS.concat(SUPERPOWER_SKILLS),
   }
 })

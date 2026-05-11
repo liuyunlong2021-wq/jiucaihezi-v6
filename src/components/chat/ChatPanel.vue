@@ -1,9 +1,13 @@
 <script setup lang="ts">
 /**
- * ChatPanel — 对话面板容器
- * 源自 code.html #chat-panel (行 1094-1169)
- * 
- * 集成：superpowers 路由 + karpathy-wiki 自动收集 + SKILL.md
+ * ChatPanel — 对话面板容器（Superpowers 完全体）
+ *
+ * 集成：
+ *   1. Session Hook — 对话开始时注入 bootstrap prompt
+ *   2. Skill Dispatch — LLM 路由 + 完整 SKILL.md 注入
+ *   3. Chain Invoke — 检测 AI 回复中的 [INVOKE:xxx] + 用户确认
+ *   4. Pipeline 可视化 — 阶段进度条
+ *   5. karpathy-wiki — 学习开关自动收集
  */
 import { ref, nextTick, watch, computed, onMounted } from 'vue'
 import { useChat } from '@/composables/useChat'
@@ -15,7 +19,13 @@ import { ingestConversation } from '@/composables/useBrain'
 const agentStore = useAgentStore()
 const sessionStore = useSessionStore()
 const { messages, isStreaming, sendMessage, stopStream, clearMessages, loadMessages } = useChat()
-const { routeNotification, isRouting, routeMessage } = useSkillRouter()
+const {
+  routeNotification, isRouting, routeMessage,
+  // Superpowers 新增
+  currentPhase, currentSkillId, pendingInvoke, pipelineActive, phaseHistory,
+  PIPELINE_STAGES,
+  buildSuperpowersPrompt, processChainInvoke, confirmChainInvoke, rejectChainInvoke, resetPipeline,
+} = useSkillRouter()
 
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
@@ -28,12 +38,16 @@ function toggleLearning() {
   localStorage.setItem('jc_learning', String(learningEnabled.value))
 }
 
-// 当前状态显示：调用搭子 or 直接用模型
-const headerStatus = computed(() =>
-  agentStore.currentAgent
+// 当前状态显示
+const headerStatus = computed(() => {
+  if (pipelineActive.value && currentSkillId.value) {
+    const stage = PIPELINE_STAGES.find(s => s.id === currentSkillId.value)
+    return stage ? `⚡ ${stage.name}` : agentStore.modelLabel
+  }
+  return agentStore.currentAgent
     ? `正在调用 ${agentStore.currentAgent.name}`
     : agentStore.modelLabel
-)
+})
 
 // 当前 sessionId
 let currentSessionId = ''
@@ -47,12 +61,12 @@ watch(messages, () => {
   })
 }, { deep: true })
 
-// ★ 切换对话时加载历史消息
+// 切换对话时加载历史消息
 watch(() => sessionStore.activeSessionId, async (newId) => {
   if (!newId) {
-    // 新对话
     clearMessages()
     currentSessionId = ''
+    resetPipeline() // 新对话重置 pipeline
     return
   }
   if (newId === currentSessionId) return
@@ -61,43 +75,68 @@ watch(() => sessionStore.activeSessionId, async (newId) => {
   loadMessages(history)
 })
 
-// 发送消息 + 自动保存 + superpowers 路由 + karpathy-wiki 自动收集
+/**
+ * 构建 system prompt（Superpowers 完全体）
+ * 牛马开关 ON → 使用完整 superpowers prompt（session hook + skill 工作流）
+ * 牛马开关 OFF → 仅用搭子的 skillContent
+ */
+function buildSystemPrompt(): string | undefined {
+  if (agentStore.routerEnabled) {
+    // Superpowers 模式：session hook + 当前 skill 全文
+    return buildSuperpowersPrompt(agentStore.agents, agentStore.currentAgent || null)
+  }
+  // 普通模式：仅 skillContent
+  return agentStore.currentAgent?.skillContent || undefined
+}
+
+// 发送消息 + superpowers 完整流程
 async function handleSend() {
   if (!inputText.value.trim() || isStreaming.value) return
   const text = inputText.value
   inputText.value = ''
 
-  // superpowers 路由：路由开关 ON 时自动分析意图
+  // 1. Superpowers 路由：牛马开关 ON 时自动分析意图
   if (agentStore.routerEnabled) {
     const result = await routeMessage(text, agentStore.agents)
     if (result.strategy === 'single' && result.matched.length > 0) {
       agentStore.selectAgent(result.matched[0].skillId)
-      // 如果 selectAgent toggle 掉了（因为已选中），再选一次
       if (!agentStore.currentAgent || agentStore.currentAgent.id !== result.matched[0].skillId) {
         agentStore.selectAgent(result.matched[0].skillId)
       }
+    } else if (result.strategy === 'chain' && result.matched.length > 0) {
+      // Chain 模式：激活第一个 skill
+      agentStore.selectAgent(result.matched[0].skillId)
     }
   }
 
-  // 首次发消息时创建 session
+  // 2. 首次发消息时创建 session
   if (!currentSessionId) {
     currentSessionId = sessionStore.startNewSession(agentStore.currentAgent?.id || '')
   }
 
+  // 3. 发送消息（使用 superpowers 完整 prompt）
   await sendMessage(text, {
-    systemPrompt: agentStore.currentAgent?.skillContent || undefined,
+    systemPrompt: buildSystemPrompt(),
     agentId: agentStore.currentAgent?.id,
     agentName: agentStore.currentAgent?.name || agentStore.modelLabel,
   })
 
-  // 保存到 IndexedDB
+  // 4. Chain Invoke 检测：检查 AI 最新回复是否包含 [INVOKE:xxx]
+  if (agentStore.routerEnabled) {
+    const lastMsg = messages.value.at(-1)
+    if (lastMsg && lastMsg.role === 'assistant') {
+      processChainInvoke(lastMsg.content)
+    }
+  }
+
+  // 5. 保存到 IndexedDB
   sessionStore.saveSession(
     currentSessionId,
     agentStore.currentAgent?.id || '',
     messages.value,
   )
 
-  // karpathy-wiki 自动收集：学习开关 ON 时，对话自动追加到搭子的 raw/
+  // 6. karpathy-wiki 自动收集
   if (learningEnabled.value && agentStore.currentAgent) {
     const lastTwo = messages.value.slice(-2)
     const convo = lastTwo.map(m => `${m.role}: ${m.content}`).join('\n')
@@ -105,20 +144,47 @@ async function handleSend() {
   }
 }
 
+// Chain Invoke 用户确认 → 切换到下一阶段并自动发消息
+async function handleConfirmChain() {
+  const nextSkill = confirmChainInvoke(agentStore.agents)
+  if (nextSkill) {
+    agentStore.selectAgent(nextSkill.id)
+    // 自动发一条消息让 AI 开始下一阶段的工作
+    await sendMessage('请开始这个阶段的工作。', {
+      systemPrompt: buildSystemPrompt(),
+      agentId: nextSkill.id,
+      agentName: nextSkill.name,
+    })
+    // 检测新回复是否又有 chain invoke
+    const lastMsg = messages.value.at(-1)
+    if (lastMsg && lastMsg.role === 'assistant') {
+      processChainInvoke(lastMsg.content)
+    }
+    // 保存
+    sessionStore.saveSession(currentSessionId, nextSkill.id, messages.value)
+  }
+}
+
+// Chain Invoke 用户拒绝
+function handleRejectChain() {
+  rejectChainInvoke()
+}
+
 // 新对话
 function startNew() {
   clearMessages()
   currentSessionId = ''
   sessionStore.switchSession('')
+  resetPipeline()
 }
 
-// 切换模型 — 行 2784
+// 切换模型
 function selectModel(modelId: string) {
   agentStore.setModel(modelId)
   showModelMenu.value = false
 }
 
-// 处理键盘事件 — 对应 code.html chatKeydown (行 1159)
+// 键盘事件
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
     e.preventDefault()
@@ -126,7 +192,7 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-// textarea 自动增高 — 对应 code.html autoGrow
+// textarea 自动增高
 function autoGrow(el: HTMLTextAreaElement) {
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 320) + 'px'
@@ -179,7 +245,33 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Messages — from code.html #chat-messages (行 1119) -->
+    <!-- ★ Superpowers Pipeline 进度条 -->
+    <div v-if="pipelineActive && agentStore.routerEnabled" class="cp-pipeline">
+      <div v-for="(stage, i) in PIPELINE_STAGES" :key="stage.id" class="cp-pipeline-step"
+           :class="{
+             active: currentSkillId === stage.id,
+             done: phaseHistory.includes(stage.id) && currentSkillId !== stage.id,
+           }">
+        <span class="mso cp-pipeline-icon">{{ stage.icon }}</span>
+        <span class="cp-pipeline-label">{{ stage.name }}</span>
+        <span v-if="i < PIPELINE_STAGES.length - 1" class="cp-pipeline-arrow">→</span>
+      </div>
+    </div>
+
+    <!-- ★ Chain Invoke 确认弹窗 -->
+    <div v-if="pendingInvoke" class="cp-chain-confirm">
+      <div class="cp-chain-msg">
+        <span class="mso" style="font-size:18px">arrow_forward</span>
+        AI 请求进入下一阶段:
+        <strong>{{ PIPELINE_STAGES.find(s => s.id === pendingInvoke)?.name || pendingInvoke }}</strong>
+      </div>
+      <div class="cp-chain-actions">
+        <button class="cp-chain-btn confirm" @click="handleConfirmChain">✓ 确认进入</button>
+        <button class="cp-chain-btn reject" @click="handleRejectChain">✗ 跳过</button>
+      </div>
+    </div>
+
+    <!-- Messages -->
     <div ref="messagesContainer" class="cp-messages">
       <!-- Welcome state -->
       <div v-if="messages.length === 0" class="cp-welcome">
@@ -589,4 +681,59 @@ onMounted(() => {
   font-size: 10px; font-weight: 700; color: var(--ink3); line-height: 1;
 }
 .cp-pill-toggle.on .cp-pill-text { color: #fff; }
+
+/* ─── Superpowers Pipeline 进度条 ─── */
+.cp-pipeline {
+  display: flex; align-items: center; gap: 2px;
+  padding: 6px 16px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(135deg, rgba(107,142,35,.03), rgba(213,199,135,.06));
+  overflow-x: auto;
+}
+.cp-pipeline-step {
+  display: flex; align-items: center; gap: 3px;
+  padding: 3px 8px; border-radius: 12px;
+  font-size: 11px; color: var(--ink3);
+  transition: all .2s; white-space: nowrap;
+}
+.cp-pipeline-step.active {
+  background: var(--olive); color: #fff; font-weight: 700;
+  box-shadow: 0 2px 8px rgba(107,142,35,.3);
+}
+.cp-pipeline-step.done {
+  background: rgba(107,142,35,.1); color: var(--olive-dark); font-weight: 600;
+}
+.cp-pipeline-icon { font-size: 14px !important; }
+.cp-pipeline-label { font-size: 11px; }
+.cp-pipeline-arrow { color: var(--ink3); opacity: .4; margin: 0 2px; font-size: 12px; }
+
+/* ─── Chain Invoke 确认条 ─── */
+.cp-chain-confirm {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; gap: 12px;
+  background: linear-gradient(135deg, rgba(107,142,35,.08), rgba(213,199,135,.12));
+  border-bottom: 1.5px solid var(--olive);
+  animation: chain-slide-in .3s ease;
+}
+@keyframes chain-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cp-chain-msg {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--ink1);
+}
+.cp-chain-msg strong { color: var(--olive-dark); }
+.cp-chain-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.cp-chain-btn {
+  padding: 5px 14px; border-radius: 8px; font-size: 12px; font-weight: 700;
+  border: none; cursor: pointer; font-family: inherit; transition: all .12s;
+}
+.cp-chain-btn.confirm {
+  background: var(--olive); color: #fff;
+}
+.cp-chain-btn.confirm:hover { filter: brightness(1.1); }
+.cp-chain-btn.reject {
+  background: var(--surface); color: var(--ink3); border: 1px solid var(--line);
+}
+.cp-chain-btn.reject:hover { border-color: var(--ink3); }
 </style>
