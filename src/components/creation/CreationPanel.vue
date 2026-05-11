@@ -3,6 +3,9 @@
  * CreationPanel — 创作面板
  * 6 模型精简版: gpt-image-2, grok-video-3, veo3.1-fast,
  *               seedance-2.0, seedance-2.0-fast, suno-5.5
+ *
+ * ★ 生产逻辑全部保持不变 ★
+ * 仅增强 UI: 画廊网格 + 卡片悬浮操作 + 灯箱 + 尺寸切换 + 加载动画
  */
 import { computed, ref } from 'vue'
 import {
@@ -36,7 +39,13 @@ import {
 } from '@/composables/useCreation'
 import { runCreation } from '@/composables/useCreationEngine'
 
-// 任务/模型 popover
+// --- 新增 UI 组件 ---
+import GalleryCard from './GalleryCard.vue'
+import GallerySizeControl from './GallerySizeControl.vue'
+import GalleryLightbox from './GalleryLightbox.vue'
+import GalleryLoadingCard from './GalleryLoadingCard.vue'
+
+// 任务/模型 popover (原有逻辑不变)
 const openPop = ref<string>('')
 function togglePop(key: string) {
   openPop.value = openPop.value === key ? '' : key
@@ -69,31 +78,106 @@ const tasks = computed(() =>
 const modelList = computed(() =>
   availableModels.value.map(k => ({ key: k, label: RH_CREATION_MODELS[k]?.label || k }))
 )
+
+// --- 新增：画廊尺寸切换 ---
+const gallerySize = ref(localStorage.getItem('jc_gallery_size') || 'medium')
+function onSizeChange(size: string) {
+  gallerySize.value = size
+  localStorage.setItem('jc_gallery_size', size)
+}
+
+// --- 新增：灯箱状态 ---
+const lbShow = ref(false)
+const lbIndex = ref(-1)
+const lbResult = computed(() => {
+  const r = cpState.results[lbIndex.value]
+  return r || { url: '', type: 'image', content: '' }
+})
+
+function openLightbox(index: number) {
+  lbIndex.value = index
+  lbShow.value = true
+}
+function closeLightbox() {
+  lbShow.value = false
+}
+function downloadResult(index: number) {
+  const r = cpState.results[index]
+  if (!r || !r.url) return
+  const a = document.createElement('a')
+  a.href = r.url
+  a.download = `creation_${r.type}_${Date.now()}.${r.type === 'video' ? 'mp4' : r.type === 'audio' ? 'mp3' : 'png'}`
+  a.target = '_blank'
+  a.click()
+}
+function deleteResult(index: number) {
+  cpState.results.splice(index, 1)
+  if (lbIndex.value === index) closeLightbox()
+  saveCpState()
+}
+function lbDownload() {
+  downloadResult(lbIndex.value)
+}
+
+// 提示词输入自适应高度
+function autoGrow(e: Event) {
+  const el = e.target as HTMLTextAreaElement
+  el.style.height = 'auto'
+  el.style.height = Math.min(el.scrollHeight, 140) + 'px'
+}
+
+// 发送按钮状态
+const canSend = computed(() =>
+  !!cpState.prompt?.trim() || cpState.files.length > 0
+)
 </script>
 
 <template>
-  <div class="cp">
+  <div class="cp" :class="'size-' + gallerySize">
     <div class="cp-toolbar">
       <span class="cp-title"><span class="mso">movie_filter</span>创作面板</span>
+      <span class="cp-toolbar-spacer" />
+      <GallerySizeControl :model-value="gallerySize" @update:model-value="onSizeChange" />
     </div>
 
-    <!-- 画廊区 -->
-    <div class="cp-gallery">
-      <div v-if="cpState.results.length" class="cp-results">
-        <div v-for="(r, i) in cpState.results.slice(0, 12)" :key="i" class="cp-result-item">
-          <img v-if="r.type === 'image'" :src="r.url" alt="" class="cp-result-img" />
-          <video v-else-if="r.type === 'video'" :src="r.url" controls class="cp-result-vid" />
-          <audio v-else-if="r.type === 'audio'" :src="r.url" controls class="cp-result-aud" />
-          <a v-else :href="r.url" target="_blank" class="cp-result-link">{{ r.url }}</a>
-        </div>
-      </div>
-      <div v-else class="cp-empty">
-        <span class="mso" style="font-size: 32px;">auto_awesome</span>
+    <!-- ★ 画廊区 — 全新 UI ★ -->
+    <div class="cp-gallery-zone">
+      <!-- 加载中占位卡 -->
+      <GalleryLoadingCard v-if="cpState.runningTasks > 0" :text="cpState.progressText || '生成中...'" />
+
+      <!-- 结果卡片 -->
+      <template v-if="cpState.results.length">
+        <GalleryCard
+          v-for="(r, i) in cpState.results.slice(0, 24)"
+          :key="i"
+          :url="r.url"
+          :type="r.type"
+          :content="r.content"
+          :index="i"
+          @preview="openLightbox"
+          @download="downloadResult"
+          @delete="deleteResult"
+        />
+      </template>
+
+      <!-- 空状态 -->
+      <div v-if="!cpState.results.length && cpState.runningTasks === 0" class="cp-empty">
+        <span class="mso cp-empty-icon">auto_awesome</span>
         <div>在下方写下提示词<br/>AI 将在这里呈现你的作品</div>
       </div>
     </div>
 
-    <!-- 参数条 -->
+    <!-- ★ 灯箱 ★ -->
+    <GalleryLightbox
+      :show="lbShow"
+      :url="lbResult.url"
+      :type="lbResult.type"
+      :content="lbResult.content"
+      @close="closeLightbox"
+      @download="lbDownload"
+    />
+
+    <!-- 参数条 (原有逻辑完全不变) -->
     <div class="cp-params">
       <!-- 任务 -->
       <div class="cp-island" @click="togglePop('task')">
@@ -163,29 +247,34 @@ const modelList = computed(() =>
     </div>
 
     <!-- 进度条 -->
-    <div v-if="cpState.runningTasks > 0" class="cp-progress">
-      <div class="cp-progress-fill" :style="{ width: cpState.progress + '%' }"></div>
+    <div v-if="cpState.runningTasks > 0" class="cp-progress-bar">
+      <div class="cp-progress-fill" :style="{ width: cpState.progress + '%' }" />
     </div>
     <div v-if="cpState.runningTasks > 0" class="cp-progress-text">{{ cpState.progressText }}</div>
 
-    <!-- 提示词输入 -->
+    <!-- ★ 提示词输入区 (增强版) ★ -->
     <div class="cp-composer">
       <div v-if="!isMusicModel" class="cp-upload-trigger"
            @click="($refs.fileInput as HTMLInputElement).click()"
-           @dragover.prevent @drop="onFileDrop" title="上传参考素材">
-        <span class="mso">add</span>
+           @dragover.prevent @drop="onFileDrop" title="上传参考素材"
+           :class="{ 'has-files': cpState.files.length > 0 }">
+        <span class="mso">{{ cpState.files.length > 0 ? 'check' : 'add' }}</span>
+        <span v-if="cpState.files.length" class="cp-file-count">{{ cpState.files.length }}</span>
         <input ref="fileInput" type="file" multiple accept="image/*,video/*,audio/*"
                style="display:none" @change="onFileSelect" />
       </div>
       <div class="cp-prompt-wrap">
         <!-- 文件缩略图 -->
         <div v-if="fileThumbs.length" class="cp-files">
-          <div v-for="f in fileThumbs" :key="f.index" class="cp-file-thumb">
+          <div v-for="f in fileThumbs" :key="f.index" class="cp-file-chip" :title="f.name">
             <img v-if="f.url" :src="f.url" alt="" />
             <span v-else-if="f.isVideo" class="mso">videocam</span>
             <span v-else-if="f.isAudio" class="mso">audiotrack</span>
-            <span v-else class="mso">insert_drive_file</span>
-            <button class="cp-file-remove" @click="removeFile(f.index)">×</button>
+            <span v-else class="mso">attach_file</span>
+            <span class="cp-file-name">{{ f.name }}</span>
+            <button class="cp-file-remove" @click="removeFile(f.index)" title="移除">
+              <span class="mso">close</span>
+            </button>
           </div>
         </div>
         <!-- Suno: 标题 + 风格标签 -->
@@ -195,11 +284,12 @@ const modelList = computed(() =>
         <div v-if="showTagsInput" class="cp-suno-row">
           <input v-model="cpState.tags" placeholder="风格标签 (如: pop, rock, edm)" class="cp-suno-input" @blur="saveCpState()" />
         </div>
-        <textarea v-model="cpState.prompt" rows="1" :placeholder="promptPlaceholder"
-                  @blur="saveCpState()" class="cp-prompt-input" />
+        <textarea v-model="cpState.prompt" rows="2" :placeholder="promptPlaceholder"
+                  @blur="saveCpState()" @input="autoGrow" class="cp-prompt-input" />
       </div>
       <div class="cp-submit">
-        <button class="cp-send-btn" @click="runCreation" title="生成">
+        <button class="cp-send-btn" :class="{ ready: canSend, generating: cpState.runningTasks > 0 }"
+                @click="runCreation" title="生成">
           <span v-if="cpState.runningTasks > 0" class="cp-running-badge">{{ cpState.runningTasks }}</span>
           <span class="mso">arrow_upward</span>
         </button>
@@ -210,27 +300,44 @@ const modelList = computed(() =>
 
 <style scoped>
 .cp { display: flex; flex-direction: column; height: 100%; background: var(--surface); }
+
+/* Toolbar */
 .cp-toolbar {
-  display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; padding: 10px 16px; gap: 8px;
+  border-bottom: 1px solid var(--line); flex-shrink: 0;
 }
 .cp-title { font-size: 14px; font-weight: 700; color: var(--ink1); display: flex; align-items: center; gap: 4px; }
 .cp-title .mso { font-size: 16px; color: var(--olive); }
+.cp-toolbar-spacer { flex: 1; }
 
-/* Gallery */
-.cp-gallery { flex: 1; overflow-y: auto; padding: 16px; min-height: 120px; }
+/* ★ 画廊网格 ★ */
+.cp-gallery-zone {
+  flex: 1; overflow-y: auto; padding: 10px 12px 6px; min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+  gap: 8px; align-items: start; align-content: start;
+}
+.cp-gallery-zone::-webkit-scrollbar { width: 4px; }
+.cp-gallery-zone::-webkit-scrollbar-thumb { background: rgba(0,0,0,.08); border-radius: 2px; }
+
+/* 画廊网格动态尺寸由 GallerySizeControl v-model 驱动，这里提供 CSS 类 */
+.cp.size-small .cp-gallery-zone { grid-template-columns: repeat(auto-fit, minmax(min(96px, 100%), 1fr)); gap: 5px; }
+.cp.size-medium .cp-gallery-zone { grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 8px; }
+.cp.size-large .cp-gallery-zone { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 10px; }
+
+/* 空状态 */
 .cp-empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 8px; height: 100%; color: var(--ink3); text-align: center; font-size: 13px;
+  gap: 10px; grid-column: 1 / -1; min-height: 200px;
+  color: var(--ink3); text-align: center; font-size: 13px; line-height: 1.7;
 }
-.cp-empty .mso { color: var(--olive); }
-.cp-results { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
-.cp-result-img, .cp-result-vid { width: 100%; border-radius: 8px; }
-.cp-result-aud { width: 100%; }
+.cp-empty-icon { font-size: 36px; color: var(--olive); animation: gcFloat 3s ease-in-out infinite; }
+@keyframes gcFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 
-/* Params */
+/* Params (完全保持原有样式) */
 .cp-params {
   display: flex; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--line);
-  flex-wrap: wrap; align-items: flex-start;
+  flex-wrap: wrap; align-items: flex-start; flex-shrink: 0;
 }
 .cp-island {
   position: relative; padding: 6px 10px; border-radius: 8px;
@@ -264,36 +371,56 @@ const modelList = computed(() =>
 .cp-dur-slider { flex: 1; accent-color: var(--olive); }
 .cp-dur-val { font-size: 12px; font-weight: 700; color: var(--olive-dark); min-width: 28px; }
 
-/* Progress */
-.cp-progress { height: 3px; background: var(--line); margin: 0 12px; border-radius: 2px; overflow: hidden; }
-.cp-progress-fill { height: 100%; background: var(--olive); transition: width .3s; }
-.cp-progress-text { text-align: center; font-size: 11px; color: var(--ink3); padding: 4px 0; }
+/* ★ 进度条 (增强) ★ */
+.cp-progress-bar {
+  height: 2px; background: rgba(107,142,35,.18); border-radius: 1px;
+  overflow: hidden; margin: 0 12px; flex-shrink: 0;
+}
+.cp-progress-fill {
+  height: 100%; border-radius: 1px;
+  background: linear-gradient(90deg, var(--olive-dark), var(--olive));
+  transition: width .5s;
+}
+.cp-progress-text { text-align: center; font-size: 10px; color: var(--ink3); padding: 2px 12px; flex-shrink: 0; }
 
-/* Composer */
+/* ★ 提示词输入区 (增强版) ★ */
 .cp-composer {
-  display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px;
-  border-top: 1px solid var(--line);
+  display: flex; align-items: flex-end; gap: 8px; padding: 10px 12px 12px;
+  border-top: 1px solid var(--line); flex-shrink: 0; background: var(--surface-alt);
 }
 .cp-upload-trigger {
-  width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-  border-radius: 10px; border: 1.5px dashed var(--line); cursor: pointer; flex-shrink: 0;
+  position: relative; width: 48px; height: 48px; min-width: 48px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; border: 1.5px dashed var(--line); cursor: pointer; flex-shrink: 0;
+  transition: all .15s; color: var(--ink3); overflow: hidden;
 }
-.cp-upload-trigger:hover { border-color: var(--olive); background: var(--olive-pale); }
-.cp-upload-trigger .mso { font-size: 20px; color: var(--ink3); }
-.cp-prompt-wrap { flex: 1; min-width: 0; }
-.cp-files { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
-.cp-file-thumb {
-  position: relative; width: 44px; height: 44px; border-radius: 6px;
-  border: 1px solid var(--line); overflow: hidden; display: flex;
-  align-items: center; justify-content: center; background: var(--surface-alt);
+.cp-upload-trigger:hover { border-color: var(--olive); color: var(--olive); background: var(--olive-pale); }
+.cp-upload-trigger.has-files { border-style: solid; border-color: var(--olive); background: var(--olive-pale); }
+.cp-upload-trigger .mso { font-size: 22px; pointer-events: none; }
+.cp-file-count {
+  position: absolute; top: -4px; right: -4px;
+  background: var(--olive); color: #fff; font-size: 9px; font-weight: 700;
+  width: 16px; height: 16px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
 }
-.cp-file-thumb img { width: 100%; height: 100%; object-fit: cover; }
-.cp-file-thumb .mso { font-size: 18px; color: var(--ink3); }
+.cp-prompt-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+
+/* 文件芯片 (V3 风格) */
+.cp-files { display: flex; flex-wrap: wrap; gap: 4px; }
+.cp-file-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
+  padding: 2px 4px; font-size: 10px; color: var(--ink2); max-width: 100px; position: relative;
+}
+.cp-file-chip img { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.cp-file-chip .mso { font-size: 18px; color: var(--olive); flex-shrink: 0; }
+.cp-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50px; }
 .cp-file-remove {
-  position: absolute; top: -2px; right: -2px; width: 16px; height: 16px;
-  border-radius: 50%; background: var(--olive); color: #fff; border: none;
-  font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; cursor: pointer; color: var(--ink3);
+  font-size: 12px; padding: 0; line-height: 1; display: flex;
 }
+.cp-file-remove .mso { font-size: 12px; }
+
 .cp-suno-row { margin-bottom: 6px; }
 .cp-suno-input {
   width: 100%; padding: 4px 0; border: none; border-bottom: 1px solid var(--line);
@@ -301,13 +428,26 @@ const modelList = computed(() =>
 }
 .cp-prompt-input {
   width: 100%; border: none; background: none; font-size: 13px; color: var(--ink);
-  resize: none; outline: none; font-family: inherit; line-height: 1.5;
+  resize: none; outline: none; font-family: inherit; line-height: 1.6;
+  min-height: 48px; max-height: 140px;
 }
 .cp-submit { flex-shrink: 0; }
 .cp-send-btn {
-  width: 36px; height: 36px; border-radius: 50%; border: none;
-  background: var(--olive); color: #fff; cursor: pointer; display: flex;
-  align-items: center; justify-content: center; transition: transform .1s;
+  width: 40px; height: 40px; border-radius: 50%; border: none;
+  background: var(--line); color: var(--surface); cursor: pointer; display: flex;
+  align-items: center; justify-content: center; transition: all .3s;
+  position: relative; pointer-events: none;
+}
+.cp-send-btn.ready {
+  background: var(--olive); color: #fff; pointer-events: auto;
+  animation: gcGlow 2.2s ease-in-out infinite;
+}
+.cp-send-btn.generating {
+  background: var(--olive-dark); color: #fff; pointer-events: none;
+}
+@keyframes gcGlow {
+  0%, 100% { box-shadow: 0 0 10px rgba(107,142,35,.15); }
+  50% { box-shadow: 0 0 22px rgba(107,142,35,.4); }
 }
 .cp-send-btn:hover { transform: scale(1.08); }
 .cp-send-btn .mso { font-size: 18px; }
@@ -316,5 +456,4 @@ const modelList = computed(() =>
   border-radius: 8px; background: #ef4444; color: #fff; font-size: 10px;
   display: flex; align-items: center; justify-content: center; font-weight: 700;
 }
-.cp-send-btn { position: relative; }
 </style>
