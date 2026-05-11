@@ -163,10 +163,10 @@ const modelList = computed(() =>
     </div>
 
     <!-- 进度条 -->
-    <div v-if="cpState.generating" class="cp-progress">
+    <div v-if="cpState.runningTasks > 0" class="cp-progress">
       <div class="cp-progress-fill" :style="{ width: cpState.progress + '%' }"></div>
     </div>
-    <div v-if="cpState.generating" class="cp-progress-text">{{ cpState.progressText }}</div>
+    <div v-if="cpState.runningTasks > 0" class="cp-progress-text">{{ cpState.progressText }}</div>
 
     <!-- 提示词输入 -->
     <div class="cp-composer">
@@ -199,8 +199,8 @@ const modelList = computed(() =>
                   @blur="saveCpState()" class="cp-prompt-input" />
       </div>
       <div class="cp-submit">
-        <button class="cp-send-btn" @click="runCreation" title="生成"
-                :disabled="cpState.generating">
+        <button class="cp-send-btn" @click="runCreation" title="生成">
+          <span v-if="cpState.runningTasks > 0" class="cp-running-badge">{{ cpState.runningTasks }}</span>
           <span class="mso">arrow_upward</span>
         </button>
       </div>
@@ -310,6 +310,11 @@ const modelList = computed(() =>
   align-items: center; justify-content: center; transition: transform .1s;
 }
 .cp-send-btn:hover { transform: scale(1.08); }
-.cp-send-btn:disabled { opacity: .5; cursor: not-allowed; }
 .cp-send-btn .mso { font-size: 18px; }
+.cp-running-badge {
+  position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px;
+  border-radius: 8px; background: #ef4444; color: #fff; font-size: 10px;
+  display: flex; align-items: center; justify-content: center; font-weight: 700;
+}
+.cp-send-btn { position: relative; }
 </style>

@@ -233,28 +233,16 @@ export async function generateImage(
   onProgress?: (elapsed: number, status: string) => void,
 ): Promise<MediaResult> {
   const { model, prompt, image, aspectRatio, resolution } = params
+  const size = params.size || mapGptImageSize(aspectRatio || '1:1', resolution)
 
-  if (model === 'gpt-image-2' && image) {
-    // ── 以图生图 → multipart /v1/images/edits ──
-    const size = mapGptImageSize(aspectRatio || '1:1', resolution)
-    const fields: Record<string, string | Blob> = {
-      model, prompt, size, response_format: 'url',
-    }
-    if (image.startsWith('data:')) {
-      fields.image = dataUrlToBlob(image)
-    } else {
-      try { const imgRes = await fetch(image); fields.image = await imgRes.blob() }
-      catch { fields.image = image }
-    }
-    const data = await apiCallMultipart('/v1/images/edits', fields)
-    const mediaUrl = extractMediaUrl(data, 'image')
-    if (!mediaUrl) throw new Error('以图生图未获取到结果')
-    return { url: mediaUrl, type: 'image' }
+  // 统一走 /v1/images/generations（V4 验证：NewAPI ImageRequest.Image 字段透传给 T8）
+  const body: any = { model, prompt, n: 1, size, response_format: 'url' }
+
+  // 以图生图：把图片作为 image 数组传入（V4 写法：image: imgUrls）
+  if (image) {
+    body.image = Array.isArray(image) ? image : [image]
   }
 
-  // ── 文生图 → JSON /v1/images/generations ──
-  const size = mapGptImageSize(aspectRatio || '1:1', resolution)
-  const body: any = { model, prompt, n: 1, size, response_format: 'url' }
   onProgress?.(0, '提交中')
   const data = await apiCall('/v1/images/generations', body)
   const mediaUrl = extractMediaUrl(data, 'image')
