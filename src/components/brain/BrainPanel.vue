@@ -1,16 +1,18 @@
 <script setup lang="ts">
 /**
- * BrainPanel.vue — 长脑子面板（karpathy-llm-wiki 完全体）
+ * BrainPanel.vue — 长脑子面板（karpathy-llm-wiki + darwin-skill 完全体）
  * UI 搬运自 dazi-studio/web/工作台/code.html L1761-1830
  *
  * 功能：
  * 1. 展示每个搭子的知识索引状态
  * 2. 5 步进度条扫描
  * 3. 建议列表（待处理/已采用/已忽略）
+ * 4. 进化反哺（darwin-skill: evaluate → improve → test → keep/revert）
  */
 import { ref, computed, onMounted } from 'vue'
 import { useAgentStore } from '@/stores/agentStore'
 import { useBrain } from '@/composables/useBrain'
+import { useEvolution } from '@/composables/useEvolution'
 import type { BrainSuggestion } from '@/composables/useBrain'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -26,12 +28,18 @@ const {
   setSuggestionStatus,
   acceptAllSuggestions,
   ignoreAllSuggestions,
+  getAcceptedSuggestionsBySkill,
 } = useBrain()
 
+const { evolveSkill, keepEvolution, isEvolving, evolveStep, evolveStepLabels } = useEvolution()
+
 // ─── 视图切换 ───
-type ViewMode = 'index' | 'processing' | 'result'
+type ViewMode = 'index' | 'processing' | 'result' | 'evolving' | 'evolve-preview'
 const viewMode = ref<ViewMode>('index')
 const resultTab = ref<'pending' | 'accepted' | 'ignored'>('pending')
+
+// ─── 进化预览状态 ───
+const evolveResults = ref<{ skillId: string; skillName: string; summary: string; newContent: string; oldContent: string }[]>([])
 
 // ─── 搭子知识状态 ───
 const brainStats = computed(() => getSkillBrainStats(store.agents))
@@ -41,6 +49,81 @@ async function startBrainRun() {
   viewMode.value = 'processing'
   await runBrainCompilation(store.agents)
   viewMode.value = 'result'
+}
+
+// ─── 采用单条建议 → 实际写入搭子 ───
+function acceptSuggestion(s: BrainSuggestion) {
+  setSuggestionStatus(s.id, 'accepted')
+  // 把建议内容追加到搭子的 skillContent
+  const skill = store.agents.find(a => a.id === s.skillId)
+  if (skill) {
+    const appendix = `\n\n---\n[知识反哺 ${new Date().toLocaleDateString('zh-CN')}]\n${s.type === 'rule' ? s.content : s.type === 'trigger' ? `新触发词: ${s.content}` : s.content}`
+    store.updateSkill(s.skillId, {
+      skillContent: skill.skillContent + appendix,
+    })
+  }
+}
+
+// ─── 反哺（darwin-skill 完整流程）───
+async function startFanbu() {
+  // 收集已采用建议按搭子分组，用于生成 wiki 上下文
+  const grouped = getAcceptedSuggestionsBySkill()
+  const skills = store.agents.filter(a => {
+    // 有知识的搭子才能反哺
+    const stat = brainStats.value.find(s => s.skillId === a.id)
+    return stat && (stat.wikiCount > 0 || grouped[a.id])
+  })
+
+  if (skills.length === 0) {
+    alert('没有可反哺的搭子。请先点"整理"收集经验。')
+    return
+  }
+
+  viewMode.value = 'evolving'
+  evolveResults.value = []
+
+  for (const skill of skills) {
+    // 构建 wiki 内容
+    const sug = grouped[skill.id] || []
+    const wikiText = sug.length > 0
+      ? sug.map(s => `[${s.type}] ${s.content}`).join('\n')
+      : `搭子"${skill.name}"的使用经验（自动收集）`
+
+    const result = await evolveSkill(skill, wikiText)
+    if (result.success) {
+      evolveResults.value.push({
+        skillId: skill.id,
+        skillName: skill.name,
+        summary: result.summary,
+        newContent: result.newContent,
+        oldContent: skill.skillContent,
+      })
+    }
+  }
+
+  viewMode.value = evolveResults.value.length > 0 ? 'evolve-preview' : 'result'
+}
+
+// ─── 确认采用进化结果（darwin-skill: keep）───
+function confirmEvolve(idx: number) {
+  const r = evolveResults.value[idx]
+  const skill = store.agents.find(a => a.id === r.skillId)
+  if (skill) {
+    const evolved = keepEvolution(skill, r.newContent, r.summary)
+    store.updateSkill(r.skillId, {
+      skillContent: evolved.skillContent,
+      version: evolved.version,
+      evolutionLog: evolved.evolutionLog,
+    })
+  }
+  evolveResults.value.splice(idx, 1)
+  if (evolveResults.value.length === 0) viewMode.value = 'index'
+}
+
+// ─── 拒绝进化（darwin-skill: revert）───
+function rejectEvolve(idx: number) {
+  evolveResults.value.splice(idx, 1)
+  if (evolveResults.value.length === 0) viewMode.value = 'index'
 }
 
 // ─── 建议过滤 ───
@@ -65,20 +148,6 @@ function typeLabel(type: string) {
 function formatDate(ts: number) {
   if (!ts) return '从未整理'
   return new Date(ts).toLocaleDateString('zh-CN')
-}
-
-// ─── 反哺：darwin-skill 对照 wiki 升级搭子 ───
-async function startFanbu() {
-  const confirmed = confirm('将使用 darwin-skill 对照知识库内容升级所有搭子，确认？')
-  if (!confirmed) return
-  viewMode.value = 'processing'
-  // TODO: 调用 darwin-skill API (https://github.com/alchaincyf/darwin-skill)
-  // 1. 读取 wiki/ 目录内容
-  // 2. 对照每个搭子的 SKILL.md
-  // 3. 使用 LLM 生成升级补丁
-  // 4. 应用补丁
-  await runBrainCompilation(store.agents)
-  viewMode.value = 'result'
 }
 </script>
 
@@ -214,12 +283,61 @@ async function startFanbu() {
           </div>
           <div class="sug-content">{{ s.content }}</div>
           <div class="sug-actions" v-if="s.status === 'pending'">
-            <button class="sug-btn accept" @click="setSuggestionStatus(s.id, 'accepted')">采用</button>
+            <button class="sug-btn accept" @click="acceptSuggestion(s)">采用</button>
             <button class="sug-btn ignore" @click="setSuggestionStatus(s.id, 'ignored')">忽略</button>
           </div>
         </div>
         <div v-if="filteredSuggestions.length === 0" class="brain-empty">
           暂无{{ resultTab === 'pending' ? '待处理' : resultTab === 'accepted' ? '已采用' : '已忽略' }}的建议。
+        </div>
+      </div>
+
+      <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
+    </div>
+
+    <!-- ─── 进化中视图 ─── -->
+    <div v-if="viewMode === 'evolving'" class="brain-body">
+      <div class="brain-processing-card">
+        <div class="brain-result-title">🧬 正在进化搭子</div>
+        <div class="brain-result-copy">正在使用 darwin-skill 引擎升级搭子能力...</div>
+        <div class="brain-processing-steps">
+          <div
+            v-for="i in 4"
+            :key="i"
+            class="brain-step"
+            :class="{ active: evolveStep === i, done: evolveStep > i }"
+          >
+            <span class="brain-step-dot">{{ evolveStep > i ? '✓' : i }}</span>
+            <div class="brain-step-label">{{ evolveStepLabels[i] }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── 进化预览视图（darwin-skill: test → keep/revert）─── -->
+    <div v-if="viewMode === 'evolve-preview'" class="brain-body">
+      <div class="brain-result-title">🧬 进化方案预览</div>
+      <div class="brain-result-copy">以下搭子有升级方案，请逐个确认。</div>
+
+      <div v-for="(r, idx) in evolveResults" :key="r.skillId" class="evolve-card">
+        <div class="evolve-card-head">
+          <strong>{{ r.skillName }}</strong>
+          <span class="evolve-badge">v{{ (store.agents.find(a => a.id === r.skillId)?.version || 1) }} → v{{ (store.agents.find(a => a.id === r.skillId)?.version || 1) + 1 }}</span>
+        </div>
+        <div class="evolve-summary">{{ r.summary }}</div>
+        <div class="evolve-diff">
+          <div class="evolve-diff-col">
+            <div class="evolve-diff-label">原版（前 200 字）</div>
+            <pre class="evolve-pre">{{ r.oldContent.slice(0, 200) }}...</pre>
+          </div>
+          <div class="evolve-diff-col evolve-diff-new">
+            <div class="evolve-diff-label">新版（前 200 字）</div>
+            <pre class="evolve-pre">{{ r.newContent.slice(0, 200) }}...</pre>
+          </div>
+        </div>
+        <div class="evolve-actions">
+          <button class="sug-btn accept" @click="confirmEvolve(idx)">✅ 采用</button>
+          <button class="sug-btn ignore" @click="rejectEvolve(idx)">↩ 回滚</button>
         </div>
       </div>
 
@@ -358,4 +476,41 @@ async function startFanbu() {
 }
 .brain-fb-btn { background: #e67e22; }
 .brain-fb-btn:hover { background: #d35400; }
+
+/* 进化预览卡片 */
+.evolve-card {
+  padding: 14px; border-radius: 10px;
+  border: 1px solid var(--line); margin-bottom: 12px;
+  background: var(--bg);
+}
+.evolve-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.evolve-card-head strong { font-size: 14px; color: var(--ink1); }
+.evolve-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: rgba(46, 125, 50, 0.1); color: #2e7d32; font-weight: 600;
+}
+.evolve-summary {
+  font-size: 12px; color: var(--ink2); line-height: 1.7;
+  margin-bottom: 10px; white-space: pre-line;
+}
+.evolve-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.evolve-diff-col {
+  border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+}
+.evolve-diff-label {
+  padding: 4px 8px; font-size: 11px; font-weight: 600;
+  background: var(--surface-alt); color: var(--ink3);
+  border-bottom: 1px solid var(--line);
+}
+.evolve-diff-new .evolve-diff-label { background: rgba(46, 125, 50, 0.06); color: #2e7d32; }
+.evolve-pre {
+  padding: 8px; font-size: 11px; line-height: 1.5;
+  color: var(--ink2); white-space: pre-wrap; word-break: break-all;
+  max-height: 120px; overflow-y: auto; margin: 0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.evolve-actions { display: flex; gap: 8px; }
 </style>

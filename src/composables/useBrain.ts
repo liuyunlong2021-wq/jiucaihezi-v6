@@ -272,6 +272,68 @@ export function ignoreAllSuggestions() {
   })
 }
 
+/**
+ * 知识回忆 — 聊天时自动匹配知识条目注入上下文
+ * 移植自 V4 code.html recallKnowledge() (行 17918-17960)
+ * 使用 n-gram + CJK 二元组匹配
+ */
+export function recallKnowledge(userMsg: string, skillId?: string): string {
+  const wikis = loadWiki()
+  if (!wikis.length || !userMsg.trim()) return ''
+
+  const msg = userMsg.toLowerCase()
+  const tokens = new Set<string>()
+
+  // 英文分词
+  msg.split(/\s+/).forEach(w => { if (w.length > 1) tokens.add(w) })
+
+  // CJK 二元组（移植自 V4 行 17923-17930）
+  const cjkRuns = msg.match(/[\u4e00-\u9fff\u3400-\u4dbf]+/g) || []
+  cjkRuns.forEach(run => {
+    for (let i = 0; i < run.length; i++) {
+      tokens.add(run[i])
+      if (i < run.length - 1) tokens.add(run.substring(i, i + 2))
+    }
+    if (run.length >= 3) tokens.add(run)
+  })
+
+  if (tokens.size === 0) return ''
+
+  // 评分每个 wiki 页
+  const scored = wikis
+    .filter(w => !skillId || w.skillId === skillId || w.skillId === '_compilation')
+    .map(wiki => {
+      const text = (wiki.title + ' ' + wiki.content).toLowerCase()
+      let score = 0
+      tokens.forEach(t => {
+        if (text.includes(t)) score += t.length // 长 token 权重高
+      })
+      return { wiki, score }
+    })
+    .filter(s => s.score > 2) // 最低门槛
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3) // 最多 3 条
+
+  if (scored.length === 0) return ''
+
+  const lines = scored.map(s => `- ${s.wiki.title}: ${s.wiki.content.slice(0, 200)}`)
+  return `\n\n---\n[知识回忆]\n${lines.join('\n')}`
+}
+
+/**
+ * 将已采用的建议实际应用到搭子的 skillContent
+ * BrainPanel 点"采用"后调用
+ */
+export function getAcceptedSuggestionsBySkill(): Record<string, BrainSuggestion[]> {
+  const accepted = suggestions.value.filter(s => s.status === 'accepted')
+  const grouped: Record<string, BrainSuggestion[]> = {}
+  for (const s of accepted) {
+    if (!grouped[s.skillId]) grouped[s.skillId] = []
+    grouped[s.skillId].push(s)
+  }
+  return grouped
+}
+
 export function useBrain() {
   // 初始化加载
   rawEntries.value = loadRaw()
@@ -290,5 +352,7 @@ export function useBrain() {
     setSuggestionStatus,
     acceptAllSuggestions,
     ignoreAllSuggestions,
+    recallKnowledge,
+    getAcceptedSuggestionsBySkill,
   }
 }
