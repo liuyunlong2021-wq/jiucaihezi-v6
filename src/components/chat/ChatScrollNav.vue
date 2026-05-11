@@ -1,75 +1,95 @@
 <script setup lang="ts">
 /**
- * ChatScrollNav.vue — 滚动导航 + 自由滚动
+ * ChatScrollNav.vue — 逐条消息滚动导航（右侧浮动）
  *
- * 移植自 V4 code.html:
- *   - updateChatScrollControls 行 7845
- *   - scrollChatToTop / scrollChatToBottom 行 7896/7906
+ * 功能：
+ *   - 上按钮：滚动到上一条消息的头部
+ *   - 下按钮：滚动到下一条消息的头部
+ *   - 输出时用户可自由滚动（不强制拉底）
  */
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
+import type { ChatMessage } from '@/composables/useChat'
 
 const props = defineProps<{
   container: HTMLElement | null
   isStreaming: boolean
+  messages?: ChatMessage[]
 }>()
 
-const showTop = ref(false)
-const showBottom = ref(false)
-const userScrolled = ref(false) // 用户手动滚动时暂停自动滚底
+const showNav = ref(false)
+const userScrolled = ref(false)
+
+// 当前可视的消息索引
+let currentMsgIndex = -1
 
 function update() {
   const el = props.container
   if (!el) return
-  const overflow = el.scrollHeight > el.clientHeight + 24
-  showTop.value = overflow && el.scrollTop > 28
-  showBottom.value = overflow && (el.scrollTop + el.clientHeight < el.scrollHeight - 28)
+  showNav.value = el.scrollHeight > el.clientHeight + 24
 }
 
-function scrollToTop() {
-  props.container?.scrollTo({ top: 0, behavior: 'smooth' })
+// 获取所有 .msg 元素
+function getMsgElements(): HTMLElement[] {
+  if (!props.container) return []
+  return Array.from(props.container.querySelectorAll('.msg'))
 }
 
-function scrollToBottom() {
-  const el = props.container
-  if (el) {
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+// 找到当前可见的消息索引
+function findCurrentVisibleIndex(): number {
+  const els = getMsgElements()
+  if (!els.length || !props.container) return -1
+  const containerTop = props.container.scrollTop
+  for (let i = els.length - 1; i >= 0; i--) {
+    if (els[i].offsetTop <= containerTop + 10) return i
+  }
+  return 0
+}
+
+// 上一条消息
+function scrollPrev() {
+  const els = getMsgElements()
+  if (!els.length || !props.container) return
+  const current = findCurrentVisibleIndex()
+  const target = Math.max(0, current - 1)
+  els[target].scrollIntoView({ behavior: 'smooth', block: 'start' })
+  userScrolled.value = true
+}
+
+// 下一条消息
+function scrollNext() {
+  const els = getMsgElements()
+  if (!els.length || !props.container) return
+  const current = findCurrentVisibleIndex()
+  const target = Math.min(els.length - 1, current + 1)
+  els[target].scrollIntoView({ behavior: 'smooth', block: 'start' })
+  // 如果到底部了，解除手动滚动锁
+  if (target === els.length - 1) {
     userScrolled.value = false
   }
 }
 
-// 检测用户手动滚动（非程序触发）
-let scrollTimer: ReturnType<typeof setTimeout> | null = null
+// 检测用户手动滚动
 function onScroll() {
   update()
-  // 如果正在流式输出，且用户不在底部 → 标记为用户手动滚动
-  if (props.isStreaming) {
+  if (props.isStreaming && props.container) {
     const el = props.container
-    if (el) {
-      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 60
-      if (!atBottom) {
-        userScrolled.value = true
-      } else {
-        userScrolled.value = false
-      }
-    }
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 60
+    userScrolled.value = !atBottom
   }
 }
 
-// 流式输出时智能滚底：仅在用户没有手动滚动时自动滚底
-watch(() => props.isStreaming, (streaming) => {
-  if (!streaming) {
-    userScrolled.value = false
-  }
-})
-
-// 暴露自动滚底方法给父组件
+// 流式输出时智能滚底
 function autoScrollIfNeeded() {
   if (!userScrolled.value && props.container) {
     props.container.scrollTop = props.container.scrollHeight
   }
 }
 
-defineExpose({ autoScrollIfNeeded, userScrolled, scrollToBottom })
+watch(() => props.isStreaming, (streaming) => {
+  if (!streaming) userScrolled.value = false
+})
+
+defineExpose({ autoScrollIfNeeded, userScrolled, scrollNext, scrollPrev })
 
 onMounted(() => {
   props.container?.addEventListener('scroll', onScroll, { passive: true })
@@ -80,7 +100,6 @@ onBeforeUnmount(() => {
   props.container?.removeEventListener('scroll', onScroll)
 })
 
-// 当 container 变化时重新绑定
 watch(() => props.container, (newEl, oldEl) => {
   oldEl?.removeEventListener('scroll', onScroll)
   newEl?.addEventListener('scroll', onScroll, { passive: true })
@@ -89,26 +108,28 @@ watch(() => props.container, (newEl, oldEl) => {
 </script>
 
 <template>
-  <div v-if="showTop || showBottom" class="scroll-nav">
-    <button v-if="showTop" class="scroll-btn" @click="scrollToTop" title="滚动到顶部">
+  <div v-if="showNav" class="scroll-nav-rail">
+    <button class="scroll-btn" @click="scrollPrev" title="上一条消息">
       <span class="mso">keyboard_arrow_up</span>
     </button>
-    <button v-if="showBottom" class="scroll-btn" @click="scrollToBottom" title="滚动到底部">
+    <button class="scroll-btn" @click="scrollNext" title="下一条消息">
       <span class="mso">keyboard_arrow_down</span>
     </button>
   </div>
 </template>
 
 <style scoped>
-.scroll-nav {
-  position: sticky; bottom: 4px;
-  display: flex; flex-direction: column; gap: 4px;
-  z-index: 10; align-self: flex-end;
-  margin-top: -70px; margin-right: 4px;
-  pointer-events: none;
+.scroll-nav-rail {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 20;
   animation: fade-in .2s ease;
 }
-.scroll-nav > * { pointer-events: auto; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .scroll-btn {
   width: 32px; height: 32px; border-radius: 50%;
@@ -117,9 +138,11 @@ watch(() => props.container, (newEl, oldEl) => {
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; transition: all .12s;
   box-shadow: 0 2px 6px rgba(0,0,0,.08);
+  opacity: 0.7;
 }
 .scroll-btn:hover {
   background: var(--olive); color: #fff; border-color: var(--olive);
+  opacity: 1;
 }
 .scroll-btn .mso { font-size: 20px; }
 </style>

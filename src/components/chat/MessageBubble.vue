@@ -12,6 +12,7 @@ import { computed, ref } from 'vue'
 import { marked } from 'marked'
 import ToolCallCard from './ToolCallCard.vue'
 import type { ToolCall } from '@/composables/useChat'
+import { useNotebook } from '@/composables/useNotebook'
 
 const props = defineProps<{
   content: string
@@ -71,13 +72,31 @@ function copyMessage() {
   })
 }
 
-// 导入到编辑区 — 复制并给视觉反馈
+// 导入到编辑区 — 直接写入第五列 EditorPanel
+const { addAgentBlock, blocks: nbBlocks } = useNotebook()
 const importLabel = ref('导入编辑区')
-function importToClipboard() {
-  navigator.clipboard.writeText(props.content).then(() => {
-    importLabel.value = '✓ 已复制到剪贴板'
-    setTimeout(() => { importLabel.value = '导入编辑区' }, 1500)
-  })
+const appendLabel = ref('追加编辑区')
+
+function importToEditor() {
+  // 替换模式：清空现有内容，添加新块
+  addAgentBlock(
+    props.agentName || '助手',
+    props.agentName || '助手',
+    props.content
+  )
+  importLabel.value = '✓ 已导入'
+  setTimeout(() => { importLabel.value = '导入编辑区' }, 1500)
+}
+
+function appendToEditor() {
+  // 追加模式：在现有内容最下方添加
+  addAgentBlock(
+    props.agentName || '助手',
+    props.agentName || '助手',
+    props.content
+  )
+  appendLabel.value = '✓ 已追加'
+  setTimeout(() => { appendLabel.value = '追加编辑区' }, 1500)
 }
 </script>
 
@@ -103,10 +122,15 @@ function importToClipboard() {
       <!-- 工具调用卡片 -->
       <ToolCallCard v-if="toolCalls && toolCalls.length" :tool-calls="toolCalls" />
 
-      <!-- 长文导入按钮 -->
-      <button v-if="showImportBtn" class="msg-import-btn" :class="{ copied: importLabel !== '导入编辑区' }" @click="importToClipboard">
-        <span class="mso">{{ importLabel === '导入编辑区' ? 'content_paste_go' : 'check' }}</span> {{ importLabel }}
-      </button>
+      <!-- 导入/追加编辑区按钮 -->
+      <div v-if="showImportBtn" class="msg-import-group">
+        <button class="msg-import-btn" :class="{ copied: importLabel !== '导入编辑区' }" @click="importToEditor">
+          <span class="mso">{{ importLabel === '导入编辑区' ? 'content_paste_go' : 'check' }}</span> {{ importLabel }}
+        </button>
+        <button class="msg-import-btn append" :class="{ copied: appendLabel !== '追加编辑区' }" @click="appendToEditor">
+          <span class="mso">{{ appendLabel === '追加编辑区' ? 'playlist_add' : 'check' }}</span> {{ appendLabel }}
+        </button>
+      </div>
     </div>
 
     <!-- 消息操作栏 -->
@@ -182,10 +206,13 @@ function importToClipboard() {
 :deep(.msg-body a) { color: var(--olive); text-decoration: underline; }
 :deep(.msg-body hr) { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
 
-/* 导入按钮 */
+/* 导入按钮组 */
+.msg-import-group {
+  display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+}
 .msg-import-btn {
   display: flex; align-items: center; gap: 4px;
-  margin-top: 8px; padding: 5px 12px;
+  padding: 5px 12px;
   border: 1px dashed var(--olive); border-radius: 6px;
   background: rgba(107,142,35,.04); color: var(--olive);
   font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
@@ -193,6 +220,9 @@ function importToClipboard() {
 }
 .msg-import-btn:hover { background: var(--olive); color: #fff; border-style: solid; }
 .msg-import-btn.copied { background: #4a7; color: #fff; border-color: #4a7; border-style: solid; }
+.msg-import-btn.append { border-color: #2196f3; color: #2196f3; background: rgba(33,150,243,.04); }
+.msg-import-btn.append:hover { background: #2196f3; color: #fff; }
+.msg-import-btn.append.copied { background: #4a7; color: #fff; border-color: #4a7; }
 .msg-import-btn .mso { font-size: 16px; }
 
 /* 操作栏 */

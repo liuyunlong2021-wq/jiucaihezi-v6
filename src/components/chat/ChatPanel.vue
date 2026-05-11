@@ -327,7 +327,7 @@ onMounted(() => {
 
       <!-- Message list (使用 MessageBubble 组件) -->
       <MessageBubble
-        v-for="(msg, i) in messages"
+        v-for="(msg, i) in messages.filter(m => m.content || m.toolCalls)"
         :key="msg.id"
         :content="msg.content"
         :role="msg.role"
@@ -340,7 +340,7 @@ onMounted(() => {
       />
 
       <!-- Streaming indicator -->
-      <div v-if="isStreaming && messages.length > 0 && !messages[messages.length - 1]?.content" class="msg assistant">
+      <div v-if="isStreaming && (!messages.length || !messages[messages.length - 1]?.content)" class="msg assistant">
         <div class="msg-meta">
           <div class="msg-meta-avatar"><span class="mso" style="font-size: 14px;">smart_toy</span></div>
           <span class="msg-meta-name">{{ agentStore.currentAgent?.name || agentStore.modelLabel }}</span>
@@ -349,10 +349,10 @@ onMounted(() => {
           <span class="typing-dot" /><span class="typing-dot" /><span class="typing-dot" />
         </div>
       </div>
-
-      <!-- 滚动导航 -->
-      <ChatScrollNav ref="scrollNav" :container="messagesContainer" :is-streaming="isStreaming" />
     </div>
+
+    <!-- 滚动导航（移到对话框右侧） -->
+    <ChatScrollNav ref="scrollNav" :container="messagesContainer" :is-streaming="isStreaming" :messages="messages" />
 
     <!-- Agent 状态条 -->
     <AgentStatusBar
@@ -373,8 +373,8 @@ onMounted(() => {
       <div class="cp-input-wrap">
         <textarea
           v-model="inputText"
-          placeholder="给搭子发指令... (Cmd/Ctrl+Enter发送, Cmd+Shift+↑↓回填历史)"
-          rows="1"
+          placeholder="给搭子发指令... (Cmd/Ctrl+Enter发送)"
+          rows="4"
           @keydown="onKeydown"
           @input="handleInput"
           @paste="fileUploader?.handlePaste($event)"
@@ -624,7 +624,7 @@ onMounted(() => {
   outline: none;
   resize: none;
   max-height: 320px;
-  min-height: 24px;
+  min-height: 72px;
   line-height: 1.6;
 }
 .cp-input-actions {
