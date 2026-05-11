@@ -55,16 +55,25 @@ function scrollPrev() {
   userScrolled.value = true
 }
 
-// 下一条消息
+// 下一条消息 — 滚到当前消息底部
 function scrollNext() {
   const els = getMsgElements()
   if (!els.length || !props.container) return
   const current = findCurrentVisibleIndex()
-  const target = Math.min(els.length - 1, current + 1)
-  els[target].scrollIntoView({ behavior: 'smooth', block: 'start' })
-  // 如果到底部了，解除手动滚动锁
-  if (target === els.length - 1) {
-    userScrolled.value = false
+  // 先滚到当前消息底部，如果已经在底部则滚到下一条
+  const el = els[current]
+  const elBottom = el.offsetTop + el.offsetHeight
+  const viewBottom = props.container.scrollTop + props.container.clientHeight
+  if (elBottom > viewBottom + 10) {
+    // 当前消息还没看完，滚到当前消息底部
+    els[current].scrollIntoView({ behavior: 'smooth', block: 'end' })
+  } else {
+    // 已看完，滚到下一条消息底部
+    const target = Math.min(els.length - 1, current + 1)
+    els[target].scrollIntoView({ behavior: 'smooth', block: 'end' })
+    if (target === els.length - 1) {
+      userScrolled.value = false
+    }
   }
 }
 

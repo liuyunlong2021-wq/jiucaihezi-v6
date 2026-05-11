@@ -248,10 +248,47 @@ onMounted(() => {
   agentStore.restoreLastAgent()
   sessionStore.loadAllSessions()
 })
+
+// ─── 拖拽上传 ───
+const isDragOver = ref(false)
+let dragLeaveTimer: ReturnType<typeof setTimeout> | null = null
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null }
+  isDragOver.value = true
+  fileUploader.value?.handleDragOver(e)
+}
+
+function onDragLeave(e: DragEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  // 延迟关闭避免子元素触发 dragleave
+  dragLeaveTimer = setTimeout(() => { isDragOver.value = false }, 100)
+  fileUploader.value?.handleDragLeave(e)
+}
+
+function onDrop(e: DragEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  isDragOver.value = false
+  if (dragLeaveTimer) { clearTimeout(dragLeaveTimer); dragLeaveTimer = null }
+  fileUploader.value?.handleDrop(e)
+}
 </script>
 
 <template>
-  <div class="cp">
+  <div class="cp"
+    @dragover.prevent="onDragOver"
+    @dragleave.prevent="onDragLeave"
+    @drop.prevent="onDrop"
+  >
+    <!-- 拖拽上传覆盖层 -->
+    <div v-if="isDragOver" class="cp-drag-overlay">
+      <span class="mso" style="font-size:48px">upload_file</span>
+      <span>松开上传文件</span>
+    </div>
     <!-- Header — from code.html #chat-panel-header (行 1095-1118) -->
     <div class="cp-header">
       <div class="cp-title">
@@ -413,6 +450,23 @@ onMounted(() => {
   background: var(--surface);
   position: relative;
   width: 100%;
+}
+
+/* 拖拽上传覆盖层 */
+.cp-drag-overlay {
+  position: absolute; inset: 0; z-index: 100;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px;
+  background: rgba(107,142,35,.08);
+  border: 3px dashed var(--olive);
+  border-radius: 12px;
+  color: var(--olive); font-size: 16px; font-weight: 700;
+  pointer-events: none;
+  animation: drag-pulse .8s ease infinite alternate;
+}
+@keyframes drag-pulse {
+  from { background: rgba(107,142,35,.05); }
+  to { background: rgba(107,142,35,.15); }
 }
 
 /* Header — from code.html line 208-219 */

@@ -23,9 +23,17 @@ import EditorPanel from '@/components/editor/EditorPanel.vue'
 import CreationPanel from '@/components/creation/CreationPanel.vue'
 import StoragePanel from '@/components/storage/StoragePanel.vue'
 import { useAgentStore } from '@/stores/agentStore'
+import { onEvent } from '@/utils/eventBus'
 import type { SkillConfig } from '@/types/skill'
 
 const agentStore = useAgentStore()
+
+// 监听全局面板切换事件（如 MessageBubble 导入编辑区）
+onEvent('switch-panel', (panel: unknown) => {
+  if (typeof panel === 'string') {
+    rightPanel.value = panel
+  }
+})
 
 // ─── Col 5 当前面板 ───
 const rightPanel = ref<string>('')

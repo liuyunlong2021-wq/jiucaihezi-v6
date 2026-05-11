@@ -13,6 +13,7 @@ import { marked } from 'marked'
 import ToolCallCard from './ToolCallCard.vue'
 import type { ToolCall } from '@/composables/useChat'
 import { useNotebook } from '@/composables/useNotebook'
+import { emitEvent } from '@/utils/eventBus'
 
 const props = defineProps<{
   content: string
@@ -78,23 +79,23 @@ const importLabel = ref('导入编辑区')
 const appendLabel = ref('追加编辑区')
 
 function importToEditor() {
-  // 替换模式：清空现有内容，添加新块
   addAgentBlock(
     props.agentName || '助手',
     props.agentName || '助手',
     props.content
   )
+  emitEvent('switch-panel', 'editor')
   importLabel.value = '✓ 已导入'
   setTimeout(() => { importLabel.value = '导入编辑区' }, 1500)
 }
 
 function appendToEditor() {
-  // 追加模式：在现有内容最下方添加
   addAgentBlock(
     props.agentName || '助手',
     props.agentName || '助手',
     props.content
   )
+  emitEvent('switch-panel', 'editor')
   appendLabel.value = '✓ 已追加'
   setTimeout(() => { appendLabel.value = '追加编辑区' }, 1500)
 }
