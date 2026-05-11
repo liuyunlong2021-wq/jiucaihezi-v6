@@ -194,55 +194,31 @@ function onResizeEnd() {
         <!-- 创建搭子 → Col 5 -->
         <AgentWizard v-if="rightPanel === 'create'" @close="rightPanel = ''" />
 
-        <!-- 搭子仓库 — 搜索 + 分组 + 右键菜单（移植自 V4 renderAgentList） -->
+        <!-- 搭子仓库 — 内置搭子卡片平铺 -->
         <div v-else-if="rightPanel === 'agents'" class="ws-warehouse">
           <div class="ws-warehouse-head">
             <h3>搭子仓库</h3>
-            <button class="ws-wh-add-btn" @click="rightPanel = 'create'" title="创建新搭子">
-              <span class="mso" style="font-size:16px">add</span>
-            </button>
           </div>
           <!-- 搜索框 -->
           <div class="ws-wh-search">
             <span class="mso" style="font-size:16px;color:var(--ink3)">search</span>
             <input v-model="agentFilter" type="text" placeholder="搜索搭子..." class="ws-wh-search-input" />
           </div>
-          <!-- 预设搭子组 -->
-          <div class="ws-wh-group">
-            <div class="ws-wh-group-head" @click="presetCollapsed = !presetCollapsed">
-              <span class="mso ws-wh-chevron" :class="{ collapsed: presetCollapsed }">expand_more</span>
-              <span>预设搭子</span>
-              <span class="ws-wh-count">{{ filteredPresets.length }}</span>
-            </div>
-            <div v-if="!presetCollapsed" class="ws-wh-group-body">
-              <div v-for="a in filteredPresets" :key="a.id" class="ws-wh-item"
-                   :class="{ active: agentStore.currentAgent?.id === a.id }"
-                   @click="startChatWithAgent(a.id)"
-                   @contextmenu.prevent="openContextMenu($event, a)">
-                <div class="ws-wh-item-name">{{ a.name }}</div>
-                <div class="ws-wh-item-desc">{{ a.description.slice(0, 50) }}</div>
+          <!-- 卡片网格 -->
+          <div class="ws-wh-grid">
+            <div v-for="a in filteredPresets" :key="a.id" class="ws-wh-card"
+                 :class="{ active: agentStore.currentAgent?.id === a.id }"
+                 @contextmenu.prevent="openContextMenu($event, a)">
+              <div class="ws-wh-card-name">{{ a.name }}</div>
+              <div class="ws-wh-card-triggers" v-if="a.triggers.length">
+                <span v-for="t in a.triggers.slice(0, 3)" :key="t" class="ws-wh-tag">{{ t }}</span>
               </div>
+              <div class="ws-wh-card-desc">{{ a.description.slice(0, 50) }}</div>
+              <button class="ws-wh-card-btn" @click="startChatWithAgent(a.id)">
+                <span class="mso" style="font-size:14px">chat</span> 启用
+              </button>
             </div>
-          </div>
-          <!-- 自定义搭子组 -->
-          <div class="ws-wh-group">
-            <div class="ws-wh-group-head" @click="customCollapsed = !customCollapsed">
-              <span class="mso ws-wh-chevron" :class="{ collapsed: customCollapsed }">expand_more</span>
-              <span>我的搭子</span>
-              <span class="ws-wh-count">{{ filteredCustom.length }}</span>
-            </div>
-            <div v-if="!customCollapsed" class="ws-wh-group-body">
-              <div v-for="a in filteredCustom" :key="a.id" class="ws-wh-item"
-                   :class="{ active: agentStore.currentAgent?.id === a.id }"
-                   @click="startChatWithAgent(a.id)"
-                   @contextmenu.prevent="openContextMenu($event, a)">
-                <div class="ws-wh-item-name">{{ a.name }}</div>
-                <div class="ws-wh-item-desc">{{ a.description.slice(0, 50) }}</div>
-              </div>
-              <div v-if="filteredCustom.length === 0" class="ws-wh-empty">
-                还没有自建搭子，点击上方 + 创建一个吧。
-              </div>
-            </div>
+            <div v-if="filteredPresets.length === 0" class="ws-wh-empty">没有匹配的搭子</div>
           </div>
         </div>
 
@@ -330,19 +306,13 @@ function onResizeEnd() {
 .ws-placeholder p { font-size: 14px; font-weight: 600; }
 .ws-hint { font-size: 12px !important; font-weight: 400 !important; color: var(--ink3); }
 
-/* ─── 搭子仓库 — 列表 + 分组 + 搜索 ─── */
+/* ─── 搭子仓库 — 内置搭子卡片 ─── */
 .ws-warehouse { display: flex; flex-direction: column; height: 100%; }
 .ws-warehouse-head {
   padding: 14px 16px; border-bottom: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center;
 }
 .ws-warehouse-head h3 { font-size: 15px; font-weight: 700; color: var(--ink1); margin: 0; }
-.ws-wh-add-btn {
-  width: 28px; height: 28px; border-radius: 6px; border: 1.5px solid var(--line);
-  background: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
-  color: var(--ink2); transition: all .12s;
-}
-.ws-wh-add-btn:hover { border-color: var(--olive); color: var(--olive); }
 /* 搜索 */
 .ws-wh-search {
   display: flex; align-items: center; gap: 6px;
@@ -353,31 +323,38 @@ function onResizeEnd() {
   flex: 1; border: none; background: none; outline: none;
   font-size: 13px; color: var(--ink1); font-family: inherit;
 }
-/* 分组 */
-.ws-wh-group { border-bottom: 1px solid var(--line); }
-.ws-wh-group-head {
-  display: flex; align-items: center; gap: 4px;
-  padding: 8px 16px; cursor: pointer; user-select: none;
-  font-size: 12px; font-weight: 700; color: var(--ink3);
+/* 卡片网格 */
+.ws-wh-grid {
+  flex: 1; overflow-y: auto; padding: 8px 12px 20px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px; align-content: start;
 }
-.ws-wh-group-head:hover { background: var(--bg); }
-.ws-wh-chevron { font-size: 18px; transition: transform .15s; }
-.ws-wh-chevron.collapsed { transform: rotate(-90deg); }
-.ws-wh-count {
-  margin-left: auto; font-size: 10px; padding: 1px 6px;
-  border-radius: 8px; background: var(--line); color: var(--ink3);
+.ws-wh-card {
+  padding: 12px 14px; border-radius: 12px;
+  border: 1.5px solid var(--line); background: var(--surface);
+  display: flex; flex-direction: column; gap: 4px;
+  transition: all .15s;
 }
-.ws-wh-group-body { padding: 0 8px 6px; }
-/* 搭子项 */
-.ws-wh-item {
-  padding: 8px 12px; border-radius: 8px; cursor: pointer;
-  transition: all .12s; margin-bottom: 2px;
+.ws-wh-card:hover { border-color: var(--olive); box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+.ws-wh-card.active { border-color: var(--olive); background: rgba(107,142,35,.05); }
+.ws-wh-card-name { font-size: 14px; font-weight: 700; color: var(--ink1); }
+.ws-wh-card-triggers { display: flex; gap: 3px; flex-wrap: wrap; }
+.ws-wh-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 4px;
+  background: rgba(213,199,135,.12); color: var(--olive-dark); font-weight: 600;
 }
-.ws-wh-item:hover { background: var(--bg); }
-.ws-wh-item.active { background: rgba(107,142,35,.08); }
-.ws-wh-item-name { font-size: 13px; font-weight: 700; color: var(--ink1); }
-.ws-wh-item-desc { font-size: 11px; color: var(--ink3); margin-top: 2px; }
-.ws-wh-empty { text-align: center; padding: 16px; font-size: 12px; color: var(--ink3); }
+.ws-wh-card-desc {
+  font-size: 11px; color: var(--ink3); line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ws-wh-card-btn {
+  margin-top: 4px; padding: 6px 0; border: none; border-radius: 8px;
+  background: var(--olive); color: #fff; font-size: 12px; font-weight: 700;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  gap: 4px; font-family: inherit; transition: all .12s;
+}
+.ws-wh-card-btn:hover { transform: scale(1.02); filter: brightness(1.05); }
+.ws-wh-empty { grid-column: 1 / -1; text-align: center; padding: 24px; font-size: 12px; color: var(--ink3); }
 
 /* ─── 右键菜单 ─── */
 .ws-ctx-overlay { position: fixed; inset: 0; z-index: 9999; }

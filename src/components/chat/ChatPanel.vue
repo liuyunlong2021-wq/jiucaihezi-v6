@@ -22,7 +22,7 @@ const messagesContainer = ref<HTMLElement | null>(null)
 const showModelMenu = ref(false)
 
 // 学习开关 — 开启后调用 karpathy-llm-wiki 持续摄入对话
-const learningEnabled = ref(false)
+const learningEnabled = ref(localStorage.getItem('jc_learning') === 'true')
 function toggleLearning() {
   learningEnabled.value = !learningEnabled.value
   localStorage.setItem('jc_learning', String(learningEnabled.value))
@@ -97,8 +97,8 @@ async function handleSend() {
     messages.value,
   )
 
-  // karpathy-wiki 自动收集：路由 ON 时，对话自动追加到搭子的 raw/
-  if (agentStore.routerEnabled && agentStore.currentAgent) {
+  // karpathy-wiki 自动收集：学习开关 ON 时，对话自动追加到搭子的 raw/
+  if (learningEnabled.value && agentStore.currentAgent) {
     const lastTwo = messages.value.slice(-2)
     const convo = lastTwo.map(m => `${m.role}: ${m.content}`).join('\n')
     ingestConversation(agentStore.currentAgent.id, convo)

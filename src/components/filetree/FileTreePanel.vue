@@ -1,8 +1,11 @@
 <script setup lang="ts">
 /**
- * FileTreePanel — 搭子列表 + 牛马开关
- * Col 2: 仅显示用户自建搭子
- * 牛马开关 = superpower 路由
+ * FileTreePanel — 我的搭子（Col 2）
+ * 
+ * 功能：
+ * - 自建搭子平铺卡片（名称 + 关键词 + 描述 + 启用）
+ * - 搜索框 + 粘贴导入
+ * - 牛马开关（superpower 路由）真正接通 agentStore
  */
 import { ref, computed, onMounted } from 'vue'
 import { useAgentStore } from '@/stores/agentStore'
@@ -13,32 +16,21 @@ const sessionStore = useSessionStore()
 
 const searchQuery = ref('')
 
-// 牛马开关（superpower 路由）
-const niuMaEnabled = ref(false)
-
-function toggleNiuMa() {
-  niuMaEnabled.value = !niuMaEnabled.value
-  localStorage.setItem('jc_niuma', String(niuMaEnabled.value))
-}
-
 // 迁移 toast
 const migrationToast = ref('')
 
 onMounted(() => {
-  niuMaEnabled.value = localStorage.getItem('jc_niuma') === 'true'
   sessionStore.loadAllSessions()
-  // 显示迁移 toast
   if (agentStore.migrationCount > 0) {
     migrationToast.value = `已从旧版本导入 ${agentStore.migrationCount} 个搭子 ✨`
     setTimeout(() => { migrationToast.value = '' }, 5000)
   }
 })
 
-// L2: 粘贴即导入 — 搜索框粘贴长文本自动创建搭子
+// 粘贴即导入 — 搜索框粘贴长文本自动创建搭子
 function onSearchPaste(e: ClipboardEvent) {
   const text = e.clipboardData?.getData('text') || ''
   if (text.length > 50) {
-    // 长文本 = 系统提示词，自动导入
     e.preventDefault()
     const skill = agentStore.importFromText(text)
     if (skill) {
@@ -49,7 +41,7 @@ function onSearchPaste(e: ClipboardEvent) {
   }
 }
 
-// L3: JSON 批量导入
+// JSON 批量导入
 function importJSON() {
   const json = prompt('粘贴旧搭子 JSON 数组 (从旧版本导出):')
   if (!json) return
@@ -62,57 +54,25 @@ function importJSON() {
   }
 }
 
-interface TreeNode {
-  id: string
-  label: string
-  icon: string
-  type: 'folder' | 'agent' | 'session' | 'file' | 'creation'
-  children?: TreeNode[]
-  expanded?: boolean
-}
-
-// 只显示用户自建搭子（内置搭子是核心竞争力，绝不外泄）
-const agentNodes = computed<TreeNode[]>(() =>
-  agentStore.agents
+// 自建搭子过滤
+const customAgents = computed(() => {
+  const q = searchQuery.value.toLowerCase()
+  return agentStore.agents
     .filter(a => a.source === 'user')
-    .map(a => ({
-      id: a.id,
-      label: a.name,
-      icon: 'smart_toy',
-      type: 'agent' as const,
-    }))
-)
-
-const tree = ref<TreeNode[]>([
-  {
-    id: 'agents', label: '我的搭子', icon: 'smart_toy',
-    type: 'folder', expanded: true,
-  },
-])
-
-function getChildren(node: TreeNode): TreeNode[] {
-  if (node.id === 'agents') return agentNodes.value
-  return node.children || []
-}
-
-function toggleFolder(node: TreeNode) {
-  if (node.type === 'folder') node.expanded = !node.expanded
-}
-
-function handleNodeClick(node: TreeNode) {
-  if (node.type === 'agent') agentStore.selectAgent(node.id)
-}
+    .filter(a => !q || a.name.toLowerCase().includes(q) || (a.description || '').toLowerCase().includes(q))
+})
 </script>
 
 <template>
   <div class="ft">
     <!-- Header -->
     <div class="ft-header">
-      <span class="ft-title">搭子</span>
+      <span class="ft-title">我的搭子</span>
+      <!-- 牛马开关 — 真正接通 agentStore.routerEnabled -->
       <button
         class="ft-niuma-toggle"
-        :class="{ on: niuMaEnabled }"
-        @click="toggleNiuMa"
+        :class="{ on: agentStore.routerEnabled }"
+        @click="agentStore.toggleRouter()"
         title="牛马模式（自动路由搭子）"
       >
         <span class="ft-niuma-dot"></span>
@@ -126,34 +86,28 @@ function handleNodeClick(node: TreeNode) {
     <!-- Search (粘贴长文本自动导入搭子) -->
     <div class="ft-search">
       <span class="mso" style="font-size: 15px;">search</span>
-      <input v-model="searchQuery" placeholder="搜索 / 粘贴旧搭子提示词..." type="text"
+      <input v-model="searchQuery" placeholder="搜索 / 粘贴提示词..." type="text"
              @paste="onSearchPaste" />
       <button class="ft-import-btn" @click="importJSON" title="导入旧搭子 JSON">
         <span class="mso" style="font-size: 14px;">upload</span>
       </button>
     </div>
 
-    <!-- Tree -->
-    <div class="ft-tree">
-      <div v-for="node in tree" :key="node.id" class="ft-node">
-        <div class="ft-item" :class="{ 'is-folder': node.type === 'folder' }" @click="toggleFolder(node)">
-          <span v-if="node.type === 'folder'" class="mso ft-twisty"
-                :style="{ transform: node.expanded ? 'rotate(90deg)' : 'rotate(0)' }">chevron_right</span>
-          <span class="mso ft-icon">{{ node.icon }}</span>
-          <span class="ft-label">{{ node.label }}</span>
-          <span v-if="getChildren(node).length" class="ft-badge">{{ getChildren(node).length }}</span>
+    <!-- 自建搭子卡片平铺 -->
+    <div class="ft-cards">
+      <div v-for="a in customAgents" :key="a.id" class="ft-card"
+           :class="{ active: agentStore.currentAgent?.id === a.id }"
+           @click="agentStore.selectAgent(a.id)">
+        <div class="ft-card-name">{{ a.name }}</div>
+        <div class="ft-card-triggers" v-if="a.triggers?.length">
+          <span v-for="t in a.triggers.slice(0, 3)" :key="t" class="ft-card-tag">{{ t }}</span>
         </div>
-
-        <div v-if="node.expanded && getChildren(node).length" class="ft-children">
-          <div v-for="child in getChildren(node)" :key="child.id" class="ft-item ft-child"
-               :class="{ active: child.type === 'agent' && agentStore.currentAgent?.id === child.id }"
-               @click="handleNodeClick(child)">
-            <span class="mso ft-icon">{{ child.icon }}</span>
-            <span class="ft-label">{{ child.label }}</span>
-          </div>
-        </div>
-
-        <div v-if="node.expanded && !getChildren(node).length" class="ft-empty">暂无内容</div>
+        <div class="ft-card-desc">{{ (a.description || '').slice(0, 40) }}</div>
+      </div>
+      <div v-if="customAgents.length === 0" class="ft-empty-card">
+        <span class="mso" style="font-size:24px;color:var(--ink3)">add_circle_outline</span>
+        <span>还没有自建搭子</span>
+        <span class="ft-empty-hint">粘贴提示词或点击「创建搭子」开始</span>
       </div>
     </div>
   </div>
@@ -193,22 +147,34 @@ function handleNodeClick(node: TreeNode) {
   border-radius: 8px; padding: 6px 8px; font-size: 12px; color: var(--ink); outline: none; font-family: inherit;
 }
 .ft-search input:focus { border-color: var(--olive); }
-.ft-tree { flex: 1; overflow-y: auto; padding: 4px 0 60px; }
-.ft-item {
-  display: flex; align-items: center; gap: 7px; padding: 8px 12px;
-  font-size: 12px; color: var(--ink2); cursor: pointer; transition: all 0.12s;
-  border-left: 2px solid transparent; user-select: none;
+
+/* 卡片平铺 */
+.ft-cards {
+  flex: 1; overflow-y: auto; padding: 4px 8px 60px;
+  display: flex; flex-direction: column; gap: 6px;
 }
-.ft-item:hover { background: var(--olive-pale); color: var(--ink); }
-.ft-item.active { background: rgba(213, 199, 135, 0.15); color: var(--olive-dark); border-left-color: var(--olive); }
-.ft-twisty { font-size: 14px !important; color: var(--ink3); transition: transform 0.15s; flex-shrink: 0; width: 14px; }
-.ft-icon { font-size: 16px; flex-shrink: 0; color: var(--ink3); }
-.ft-item.active .ft-icon, .ft-item:hover .ft-icon { color: var(--olive); }
-.ft-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ft-badge { font-size: 10px; color: var(--olive-dark); background: rgba(213, 199, 135, 0.12); padding: 2px 6px; border-radius: 999px; }
-.ft-child { padding-left: 36px; }
-.ft-children { display: block; }
-.ft-empty { padding: 8px 12px 8px 36px; font-size: 11px; color: var(--ink3); font-style: italic; }
+.ft-card {
+  padding: 10px 12px; border-radius: 10px;
+  border: 1.5px solid var(--line); background: var(--surface);
+  cursor: pointer; transition: all .15s;
+}
+.ft-card:hover { border-color: var(--olive); box-shadow: 0 2px 8px rgba(0,0,0,.04); }
+.ft-card.active { border-color: var(--olive); background: rgba(107,142,35,.06); }
+.ft-card-name { font-size: 13px; font-weight: 700; color: var(--ink1); margin-bottom: 3px; }
+.ft-card-triggers { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 3px; }
+.ft-card-tag {
+  font-size: 10px; padding: 1px 6px; border-radius: 4px;
+  background: rgba(213,199,135,.12); color: var(--olive-dark); font-weight: 600;
+}
+.ft-card-desc {
+  font-size: 11px; color: var(--ink3); line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ft-empty-card {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 4px; padding: 24px 12px; color: var(--ink3); font-size: 12px;
+}
+.ft-empty-hint { font-size: 10px; color: var(--ink3); opacity: .6; }
 
 /* 迁移 toast */
 .ft-toast {

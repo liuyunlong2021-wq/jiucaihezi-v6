@@ -8,7 +8,7 @@
  */
 import { ref } from 'vue'
 import { resolveApiConfig, buildHeaders, buildChatErrorMessage, type ApiConfig } from '@/utils/api'
-import { recallKnowledge, ingestConversation } from '@/composables/useBrain'
+import { recallKnowledge } from '@/composables/useBrain'
 
 export interface ChatMessage {
   id: string
@@ -206,13 +206,6 @@ export function useChat() {
           messages.value[aiMsgIndex].content = fullText
           isStreaming.value = false
           abortController.value = null
-          // 自动收集对话到长脑子 raw/ (karpathy-wiki ingest)
-          if (options.agentId && fullText) {
-            ingestConversation(
-              options.agentId,
-              `用户: ${userText}\n\n搭子: ${fullText.slice(0, 2000)}`
-            )
-          }
         },
         // onError (行 10444-10460)
         (err) => {
