@@ -53,7 +53,7 @@ export async function evolveSkill(
     // Step 3: improve — 生成升级版
     evolveStep.value = 3
 
-    const config = resolveApiConfig()
+    const config = await resolveApiConfig()
 
     // darwin-skill 的核心 prompt：evaluate → improve
     const darwinPrompt = `你是 darwin-skill 进化引擎。你的任务是根据真实使用经验升级搭子的 SKILL.md。
@@ -87,7 +87,7 @@ ${wikiContent.slice(0, 6000)}
 先输出 3 行变更摘要（中文），然后输出完整的新版 SKILL.md body（不含 frontmatter）。
 用 === SUMMARY === 和 === SKILL.MD === 分隔。`
 
-    const res = await fetch(`${config.apiBase}/chat/completions`, {
+    const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
       method: 'POST',
       headers: buildHeaders(config),
       body: JSON.stringify({

@@ -138,7 +138,7 @@ export async function runBrainCompilation(
     currentStep.value = 2
 
     // Step 2: 筛选有用经验 — 发送给 LLM 分析
-    const config = resolveApiConfig()
+    const config = await resolveApiConfig()
     const allSuggestions: BrainSuggestion[] = []
 
     for (const [skillId, entries] of Object.entries(grouped)) {
@@ -180,7 +180,7 @@ ${conversationText}
       currentStep.value = 4
 
       try {
-        const res = await fetch(`${config.apiBase}/chat/completions`, {
+        const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
           method: 'POST',
           headers: buildHeaders(config),
           body: JSON.stringify({

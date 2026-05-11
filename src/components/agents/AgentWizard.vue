@@ -82,7 +82,7 @@ async function generateSkillMd() {
   errorMsg.value = ''
 
   try {
-    const config = resolveApiConfig()
+    const config = await resolveApiConfig()
     let sysPrompt = ''
     let userMsg = ''
 
@@ -94,7 +94,7 @@ async function generateSkillMd() {
       userMsg = `## 用途\n${purposeText.value}\n\n## 期望的输出规范\n${outputFormat.value}`
     }
 
-    const res = await fetch(`${config.apiBase}/chat/completions`, {
+    const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
       method: 'POST',
       headers: buildHeaders(config),
       body: JSON.stringify({

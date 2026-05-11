@@ -67,10 +67,10 @@ export async function routeMessage(
   isRouting.value = true
 
   try {
-    const config = resolveApiConfig()
+    const config = await resolveApiConfig()
     const routerPrompt = buildRouterPrompt(allSkills)
 
-    const res = await fetch(`${config.apiBase}/chat/completions`, {
+    const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
       method: 'POST',
       headers: buildHeaders(config),
       body: JSON.stringify({
