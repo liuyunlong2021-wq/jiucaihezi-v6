@@ -18,10 +18,13 @@ import { ingestConversation } from '@/composables/useBrain'
 import MessageBubble from './MessageBubble.vue'
 import FileUploader from './FileUploader.vue'
 import ChatScrollNav from './ChatScrollNav.vue'
+import AgentStatusBar from './AgentStatusBar.vue'
+import SkillPickerBar from './SkillPickerBar.vue'
 
 const agentStore = useAgentStore()
 const sessionStore = useSessionStore()
-const { messages, isStreaming, sendMessage, stopStream, clearMessages, loadMessages } = useChat()
+const { messages, isStreaming, sendMessage, stopStream, clearMessages, loadMessages,
+  agentPhase, agentDetail, currentToolProgress, toolHistory } = useChat()
 const {
   routeNotification, isRouting, routeMessage,
   // Superpowers 新增
@@ -330,6 +333,8 @@ onMounted(() => {
         :role="msg.role"
         :agent-name="msg.agentName"
         :index="i"
+        :tool-calls="msg.toolCalls"
+        :tool-name="msg.toolName"
         @retry="retryMessage"
         @delete="deleteMessage"
       />
@@ -349,8 +354,19 @@ onMounted(() => {
       <ChatScrollNav ref="scrollNav" :container="messagesContainer" :is-streaming="isStreaming" />
     </div>
 
+    <!-- Agent 状态条 -->
+    <AgentStatusBar
+      :phase="agentPhase"
+      :detail="agentDetail"
+      :tool-progress="currentToolProgress"
+      :tool-history="toolHistory"
+    />
+
     <!-- 附件预览 -->
     <FileUploader ref="fileUploader" />
+
+    <!-- 搭子快捷按钮栏 -->
+    <SkillPickerBar />
 
     <!-- 输入区 -->
     <div class="cp-input-area">

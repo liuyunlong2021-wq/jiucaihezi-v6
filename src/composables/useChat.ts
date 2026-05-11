@@ -1,45 +1,144 @@
 /**
- * composables/useChat.ts — 聊天核心逻辑
- * 源自 code.html:
- *   - streamChat() 行 10228-10461
- *   - sendMessage() 行 9581-9830 (简化版)
- *   - endStream() 行 10462-10484
- *   - SSE parser 行 10392-10441
+ * composables/useChat.ts — 聊天核心逻辑（工具调用完全体）
+ *
+ * 对标 OpenClaw-Admin stores/chat.ts:
+ *   - Agent 状态机 (8 态)
+ *   - tool_call 解析 + 执行 + 回送闭环
+ *   - ToolProgress 实时追踪
+ *   - SSE 流式解析
  */
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { resolveApiConfig, buildHeaders, buildChatErrorMessage, type ApiConfig } from '@/utils/api'
 import { recallKnowledge } from '@/composables/useBrain'
 
+// ─── 类型定义 ───
+
 export interface ChatMessage {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   timestamp: number
   agentId?: string
   agentName?: string
+  toolCalls?: ToolCall[]       // AI 请求的工具调用
+  toolCallId?: string          // tool result 对应的 call id
+  toolName?: string            // tool result 对应的工具名
 }
 
-// Reactive state
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+export interface ToolProgress {
+  toolCallId: string
+  name: string
+  phase: 'start' | 'executing' | 'result'
+  args: string
+  result: string | null
+  isError: boolean
+  startedAtMs: number
+  finishedAtMs: number | null
+}
+
+// Agent 状态机 (对标 OpenClaw AgentPhase)
+export type AgentPhase =
+  | 'idle'       // 空闲
+  | 'sending'    // 发送中
+  | 'thinking'   // AI 思考中
+  | 'tool'       // 调用工具中
+  | 'replying'   // 流式回复中
+  | 'done'       // 完成
+  | 'error'      // 错误
+
+// ─── 全局响应式状态 ───
+
 const messages = ref<ChatMessage[]>([])
 const isStreaming = ref(false)
 const abortController = ref<AbortController | null>(null)
 
-/**
- * 生成消息 ID — 参考 code.html createLocalMessageId()
- */
+// Agent 状态
+const agentPhase = ref<AgentPhase>('idle')
+const agentDetail = ref('')          // 状态详情文字
+const currentToolProgress = ref<ToolProgress | null>(null)
+const toolHistory = ref<ToolProgress[]>([])   // 本轮所有工具调用记录
+
+// ─── 内部工具 ───
+
 function createMessageId(role: string): string {
   return role + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
 }
 
+function setPhase(phase: AgentPhase, detail = '') {
+  agentPhase.value = phase
+  agentDetail.value = detail
+}
+
+// ─── 内置工具执行器（小白按钮映射的后端） ───
+
 /**
- * SSE 流解析器 — 精确复制自 code.html 行 10392-10441
- * 
- * 读取 ReadableStream, 逐行解析 data: 事件, 提取 delta.content
+ * 执行工具调用
+ * 当前为模拟执行 — 实际需要对接各 skill handler
+ * 后续扩展：注册式 tool handler
  */
+async function executeToolCall(call: ToolCall): Promise<string> {
+  const name = call.function.name
+  let args: Record<string, unknown> = {}
+  try {
+    args = JSON.parse(call.function.arguments || '{}')
+  } catch {}
+
+  // 内置工具：搜索
+  if (name === 'web_search' || name === 'search') {
+    return JSON.stringify({
+      status: 'success',
+      note: `搜索功能需要后端支持。查询: ${args.query || args.q || ''}`,
+    })
+  }
+
+  // 内置工具：代码执行
+  if (name === 'code_execute' || name === 'run_code') {
+    return JSON.stringify({
+      status: 'simulated',
+      note: '代码执行功能需要沙箱后端支持。',
+      code: args.code || '',
+    })
+  }
+
+  // 内置工具：文件读取
+  if (name === 'read_file' || name === 'file_read') {
+    return JSON.stringify({
+      status: 'simulated',
+      note: `文件读取需要后端支持。路径: ${args.path || ''}`,
+    })
+  }
+
+  // 默认：返回工具不支持
+  return JSON.stringify({
+    status: 'not_implemented',
+    tool: name,
+    note: `工具 "${name}" 暂未注册执行器。参数已记录。`,
+    args: args,
+  })
+}
+
+// ─── SSE 流解析器（增强版：解析 tool_calls） ───
+
+interface SSEResult {
+  fullText: string
+  toolCalls: ToolCall[]
+  finishReason: string
+}
+
 async function readSSEStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   onDelta: (fullText: string) => void,
-  onFinish: (fullText: string, finishReason: string) => void,
+  onToolCallDelta: (toolCalls: ToolCall[]) => void,
+  onFinish: (result: SSEResult) => void,
   onError: (err: Error) => void
 ) {
   const decoder = new TextDecoder()
@@ -47,11 +146,15 @@ async function readSSEStream(
   let fullReply = ''
   let finishReason = ''
 
+  // 累积 tool_calls（流式模式下 tool_calls 是分片到达的）
+  const toolCallAccum: Map<number, { id: string; name: string; args: string }> = new Map()
+
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) {
-        onFinish(fullReply, finishReason)
+        const toolCalls = buildToolCalls(toolCallAccum)
+        onFinish({ fullText: fullReply, toolCalls, finishReason })
         return
       }
 
@@ -59,7 +162,6 @@ async function readSSEStream(
       const lines = buffer.split('\n')
       buffer = lines.pop() || ''
 
-      // 行 10422-10436: SSE line parser
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue
         const data = line.slice(6).trim()
@@ -67,10 +169,31 @@ async function readSSEStream(
         try {
           const j = JSON.parse(data)
           finishReason = j.choices?.[0]?.finish_reason || finishReason
-          const delta = j.choices?.[0]?.delta?.content || ''
-          if (delta) {
-            fullReply += delta
+          const delta = j.choices?.[0]?.delta
+
+          // 文本内容
+          if (delta?.content) {
+            fullReply += delta.content
             onDelta(fullReply)
+          }
+
+          // ★ 关键：解析 tool_calls delta
+          if (delta?.tool_calls && Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0
+              if (!toolCallAccum.has(idx)) {
+                toolCallAccum.set(idx, {
+                  id: tc.id || '',
+                  name: tc.function?.name || '',
+                  args: '',
+                })
+              }
+              const entry = toolCallAccum.get(idx)!
+              if (tc.id) entry.id = tc.id
+              if (tc.function?.name) entry.name += tc.function.name
+              if (tc.function?.arguments) entry.args += tc.function.arguments
+            }
+            onToolCallDelta(buildToolCalls(toolCallAccum))
           }
         } catch {}
       }
@@ -84,13 +207,26 @@ async function readSSEStream(
   }
 }
 
-/**
- * useChat — 核心 composable
- */
+function buildToolCalls(accum: Map<number, { id: string; name: string; args: string }>): ToolCall[] {
+  return Array.from(accum.values())
+    .filter(tc => tc.id && tc.name)
+    .map(tc => ({
+      id: tc.id,
+      type: 'function' as const,
+      function: { name: tc.name, arguments: tc.args },
+    }))
+}
+
+// ─── useChat composable ───
+
 export function useChat() {
   /**
-   * 发送消息并获取流式回复
-   * 精确复制自 code.html streamChat() 行 10228-10461 的核心逻辑
+   * 发送消息并获取流式回复（含工具调用闭环）
+   *
+   * 流程:
+   *   用户消息 → LLM → tool_calls?
+   *     YES → 执行 tool → 回送 result → LLM → tool_calls? → ...
+   *     NO  → 最终回复 → 结束
    */
   async function sendMessage(
     userText: string,
@@ -101,8 +237,8 @@ export function useChat() {
     } = {}
   ) {
     if (!userText.trim() || isStreaming.value) return
-    
-    // 1. 解析 API 配置 (行 10230-10233)
+
+    // 1. 解析 API 配置
     let config: ApiConfig
     try {
       config = await resolveApiConfig()
@@ -136,109 +272,234 @@ export function useChat() {
     }
     messages.value.push(userMsg)
 
-    // 3. 知识回忆 — 自动匹配知识库注入上下文（移植自 V4 行 17918）
+    // 3. 知识回忆
     let systemPrompt = options.systemPrompt || '你是韭菜盒子的AI助手，请用中文回复。'
     const recalled = recallKnowledge(userText, options.agentId)
     if (recalled) {
       systemPrompt += recalled
     }
 
-    // 4. 构建 OpenAI 格式消息 (行 10261)
-    const apiMessages = [
-      { role: 'system' as const, content: systemPrompt },
-      ...messages.value
-        .filter(m => m.role !== 'system')
-        .map(m => ({ role: m.role, content: m.content }))
-    ]
+    // 4. 重置本轮状态
+    toolHistory.value = []
+    currentToolProgress.value = null
+    setPhase('sending')
 
-    // 4. 准备 AI 回复占位 (行 10304-10312)
-    const aiMsg: ChatMessage = {
-      id: createMessageId('assistant'),
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now(),
-      agentId: options.agentId,
-      agentName: options.agentName,
-    }
-    messages.value.push(aiMsg)
-    const aiMsgIndex = messages.value.length - 1
+    // 5. 开始 tool loop
+    await runToolLoop(config, systemPrompt, options)
+  }
 
-    // 5. 开始流式请求 (行 10283, 10378-10383)
-    isStreaming.value = true
-    abortController.value = new AbortController()
-    const headers = buildHeaders(config)
+  /**
+   * ★ 核心: Tool 调用循环
+   * 持续调用 LLM，直到不再返回 tool_calls
+   */
+  async function runToolLoop(
+    config: ApiConfig,
+    systemPrompt: string,
+    options: { agentId?: string; agentName?: string }
+  ) {
+    const MAX_TOOL_ROUNDS = 10
+    let round = 0
 
-    try {
-      const res = await fetch(config.apiBase + '/v1/chat/completions', {
-        method: 'POST',
-        signal: abortController.value.signal,
-        headers,
-        body: JSON.stringify({
-          model: config.model,
-          messages: apiMessages,
-          max_tokens: 4096,
-          stream: true,
-        }),
-      })
+    while (round < MAX_TOOL_ROUNDS) {
+      round++
 
-      // 错误处理 (行 10385-10389)
-      if (!res.ok) {
-        const raw = await res.text()
-        let parsed = null
-        try { parsed = raw ? JSON.parse(raw) : null } catch {}
-        const errMsg = buildChatErrorMessage(res.status, parsed, raw || res.statusText || '请求失败')
+      // 构建 API 消息（包括 tool results）
+      const apiMessages = buildApiMessages(systemPrompt)
+
+      // 准备 AI 回复占位
+      const aiMsg: ChatMessage = {
+        id: createMessageId('assistant'),
+        role: 'assistant',
+        content: '',
+        timestamp: Date.now(),
+        agentId: options.agentId,
+        agentName: options.agentName,
+      }
+      messages.value.push(aiMsg)
+      const aiMsgIndex = messages.value.length - 1
+
+      // 流式请求
+      isStreaming.value = true
+      abortController.value = new AbortController()
+      setPhase('thinking')
+
+      try {
+        const res = await fetch(config.apiBase + '/v1/chat/completions', {
+          method: 'POST',
+          signal: abortController.value.signal,
+          headers: buildHeaders(config),
+          body: JSON.stringify({
+            model: config.model,
+            messages: apiMessages,
+            max_tokens: 4096,
+            stream: true,
+          }),
+        })
+
+        if (!res.ok) {
+          const raw = await res.text()
+          let parsed = null
+          try { parsed = raw ? JSON.parse(raw) : null } catch {}
+          messages.value[aiMsgIndex].content = buildChatErrorMessage(res.status, parsed, raw || '请求失败')
+          setPhase('error', `API ${res.status}`)
+          isStreaming.value = false
+          abortController.value = null
+          return
+        }
+
+        // 读取 SSE 流
+        const reader = res.body!.getReader()
+        const result = await new Promise<SSEResult>((resolve, reject) => {
+          readSSEStream(
+            reader,
+            (fullText) => {
+              messages.value[aiMsgIndex].content = fullText
+              if (agentPhase.value !== 'replying') setPhase('replying')
+            },
+            (toolCalls) => {
+              // 实时显示 tool_calls
+              if (agentPhase.value !== 'tool') {
+                const names = toolCalls.map(tc => tc.function.name).join(', ')
+                setPhase('tool', names)
+              }
+            },
+            (r) => resolve(r),
+            (err) => reject(err),
+          )
+        })
+
+        // 更新最终消息
+        messages.value[aiMsgIndex].content = result.fullText
+        messages.value[aiMsgIndex].toolCalls = result.toolCalls.length > 0 ? result.toolCalls : undefined
+
+        // ★ 判断是否有 tool_calls 需要执行
+        if (result.finishReason === 'tool_calls' || result.toolCalls.length > 0) {
+          // 执行所有 tool calls
+          for (const call of result.toolCalls) {
+            // 更新进度
+            const progress: ToolProgress = {
+              toolCallId: call.id,
+              name: call.function.name,
+              phase: 'executing',
+              args: call.function.arguments,
+              result: null,
+              isError: false,
+              startedAtMs: Date.now(),
+              finishedAtMs: null,
+            }
+            currentToolProgress.value = progress
+            setPhase('tool', call.function.name)
+
+            // 执行
+            let toolResult: string
+            try {
+              toolResult = await executeToolCall(call)
+            } catch (err) {
+              toolResult = JSON.stringify({ error: (err as Error).message })
+              progress.isError = true
+            }
+
+            // 更新进度
+            progress.phase = 'result'
+            progress.result = toolResult
+            progress.finishedAtMs = Date.now()
+            currentToolProgress.value = { ...progress }
+            toolHistory.value.push({ ...progress })
+
+            // 添加 tool result 消息
+            const toolMsg: ChatMessage = {
+              id: createMessageId('tool'),
+              role: 'tool',
+              content: toolResult,
+              timestamp: Date.now(),
+              toolCallId: call.id,
+              toolName: call.function.name,
+            }
+            messages.value.push(toolMsg)
+          }
+
+          // 继续循环 — 将 tool results 回送给 LLM
+          isStreaming.value = false
+          abortController.value = null
+          continue
+        }
+
+        // 无 tool_calls → 正常结束
+        setPhase('done')
+        isStreaming.value = false
+        abortController.value = null
+        currentToolProgress.value = null
+        return
+
+      } catch (err) {
+        const errMsg = (err as Error).name === 'AbortError'
+          ? '⚠️ 生成已手动停止'
+          : '⚠️ ' + (err as Error).message
         messages.value[aiMsgIndex].content = errMsg
+        setPhase('error', (err as Error).message)
         isStreaming.value = false
         abortController.value = null
         return
       }
-
-      // 6. 读取 SSE 流 (行 10392-10441)
-      const reader = res.body!.getReader()
-      await readSSEStream(
-        reader,
-        // onDelta — 实时更新消息 (行 10429-10434)
-        (fullText) => {
-          messages.value[aiMsgIndex].content = fullText
-        },
-        // onFinish (行 10327-10375 简化)
-        (fullText) => {
-          messages.value[aiMsgIndex].content = fullText
-          isStreaming.value = false
-          abortController.value = null
-        },
-        // onError (行 10444-10460)
-        (err) => {
-          if (messages.value[aiMsgIndex].content) {
-            messages.value[aiMsgIndex].content += '\n\n⚠️ 中断：' + err.message
-          } else {
-            messages.value[aiMsgIndex].content = '⚠️ ' + err.message
-          }
-          isStreaming.value = false
-          abortController.value = null
-        }
-      )
-    } catch (err) {
-      // 行 10444-10460
-      const errMsg = (err as Error).name === 'AbortError'
-        ? '⚠️ 生成已手动停止'
-        : '⚠️ ' + (err as Error).message
-      messages.value[aiMsgIndex].content = errMsg
-      isStreaming.value = false
-      abortController.value = null
     }
+
+    // 超过最大轮次
+    messages.value.push({
+      id: createMessageId('assistant'),
+      role: 'assistant',
+      content: '⚠️ 工具调用轮次超限 (最多 10 轮)，已自动停止。',
+      timestamp: Date.now(),
+    })
+    setPhase('done')
+    isStreaming.value = false
+    abortController.value = null
   }
 
-  /** 停止生成 — 行 10283 */
+  /**
+   * 构建 API 消息列表（包含 tool results）
+   */
+  function buildApiMessages(systemPrompt: string) {
+    const apiMessages: Array<Record<string, unknown>> = [
+      { role: 'system', content: systemPrompt },
+    ]
+
+    for (const m of messages.value) {
+      if (m.role === 'system') continue
+
+      if (m.role === 'tool') {
+        apiMessages.push({
+          role: 'tool',
+          content: m.content,
+          tool_call_id: m.toolCallId,
+        })
+      } else if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+        apiMessages.push({
+          role: 'assistant',
+          content: m.content || null,
+          tool_calls: m.toolCalls,
+        })
+      } else {
+        apiMessages.push({ role: m.role, content: m.content })
+      }
+    }
+
+    return apiMessages
+  }
+
+  /** 停止生成 */
   function stopStream() {
     abortController.value?.abort()
     abortController.value = null
     isStreaming.value = false
+    setPhase('idle')
   }
 
   /** 清空消息 */
   function clearMessages() {
     messages.value = []
+    setPhase('idle')
+    toolHistory.value = []
+    currentToolProgress.value = null
   }
 
   /** 加载历史消息 */
@@ -253,5 +514,10 @@ export function useChat() {
     stopStream,
     clearMessages,
     loadMessages,
+    // 工具调用状态（供 UI 消费）
+    agentPhase,
+    agentDetail,
+    currentToolProgress,
+    toolHistory,
   }
 }

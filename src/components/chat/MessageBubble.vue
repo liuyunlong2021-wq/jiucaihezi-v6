@@ -10,12 +10,16 @@
  */
 import { computed, ref } from 'vue'
 import { marked } from 'marked'
+import ToolCallCard from './ToolCallCard.vue'
+import type { ToolCall } from '@/composables/useChat'
 
 const props = defineProps<{
   content: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   agentName?: string
   index: number
+  toolCalls?: ToolCall[]
+  toolName?: string
 }>()
 
 const emit = defineEmits<{
@@ -86,15 +90,18 @@ function importToClipboard() {
     <div class="msg-meta">
       <div class="msg-meta-avatar">
         <span class="mso" style="font-size: 14px;">
-          {{ role === 'user' ? 'person' : 'smart_toy' }}
+          {{ role === 'user' ? 'person' : role === 'tool' ? 'build' : 'smart_toy' }}
         </span>
       </div>
       <span class="msg-meta-name">
-        {{ role === 'user' ? '你' : (agentName || '助手') }}
+        {{ role === 'user' ? '你' : role === 'tool' ? `工具: ${toolName || '结果'}` : (agentName || '助手') }}
       </span>
     </div>
     <div class="msg-bubble">
       <div class="msg-body" v-html="renderedHtml"></div>
+
+      <!-- 工具调用卡片 -->
+      <ToolCallCard v-if="toolCalls && toolCalls.length" :tool-calls="toolCalls" />
 
       <!-- 长文导入按钮 -->
       <button v-if="showImportBtn" class="msg-import-btn" :class="{ copied: importLabel !== '导入编辑区' }" @click="importToClipboard">
