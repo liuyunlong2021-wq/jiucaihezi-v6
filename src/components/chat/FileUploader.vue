@@ -21,7 +21,15 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const isDragging = ref(false)
 
 // 暴露给父组件
-defineExpose({ attachedFiles, clearAll })
+defineExpose({
+  attachedFiles,
+  clearAll,
+  triggerFileInput,
+  handleDragOver,
+  handleDragLeave,
+  handleDrop,
+  handlePaste,
+})
 
 function triggerFileInput() {
   fileInput.value?.click()

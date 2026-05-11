@@ -67,10 +67,12 @@ function copyMessage() {
   })
 }
 
-// 导入到剪贴板
+// 导入到编辑区 — 复制并给视觉反馈
+const importLabel = ref('导入编辑区')
 function importToClipboard() {
   navigator.clipboard.writeText(props.content).then(() => {
-    alert('已复制到剪贴板，可粘贴到编辑器中')
+    importLabel.value = '✓ 已复制到剪贴板'
+    setTimeout(() => { importLabel.value = '导入编辑区' }, 1500)
   })
 }
 </script>
@@ -95,8 +97,8 @@ function importToClipboard() {
       <div class="msg-body" v-html="renderedHtml"></div>
 
       <!-- 长文导入按钮 -->
-      <button v-if="showImportBtn" class="msg-import-btn" @click="importToClipboard">
-        <span class="mso">content_paste_go</span> 导入编辑区
+      <button v-if="showImportBtn" class="msg-import-btn" :class="{ copied: importLabel !== '导入编辑区' }" @click="importToClipboard">
+        <span class="mso">{{ importLabel === '导入编辑区' ? 'content_paste_go' : 'check' }}</span> {{ importLabel }}
       </button>
     </div>
 
@@ -183,6 +185,7 @@ function importToClipboard() {
   transition: all .12s;
 }
 .msg-import-btn:hover { background: var(--olive); color: #fff; border-style: solid; }
+.msg-import-btn.copied { background: #4a7; color: #fff; border-color: #4a7; border-style: solid; }
 .msg-import-btn .mso { font-size: 16px; }
 
 /* 操作栏 */

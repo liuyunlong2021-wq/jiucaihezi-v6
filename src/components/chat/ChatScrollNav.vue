@@ -101,11 +101,14 @@ watch(() => props.container, (newEl, oldEl) => {
 
 <style scoped>
 .scroll-nav {
-  position: absolute; right: 12px; bottom: 8px;
+  position: sticky; bottom: 4px;
   display: flex; flex-direction: column; gap: 4px;
-  z-index: 10;
+  z-index: 10; align-self: flex-end;
+  margin-top: -70px; margin-right: 4px;
+  pointer-events: none;
   animation: fade-in .2s ease;
 }
+.scroll-nav > * { pointer-events: auto; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .scroll-btn {
   width: 32px; height: 32px; border-radius: 50%;
