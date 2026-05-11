@@ -28,18 +28,18 @@ import type { SkillConfig } from '@/types/skill'
 
 const agentStore = useAgentStore()
 
+// ─── Col 5 当前面板 ───
+const rightPanel = ref<string>('')
+const showAgentEditor = ref(false)
+const showEvolution = ref(false)
+const evolutionSkill = ref<SkillConfig | null>(null)
+
 // 监听全局面板切换事件（如 MessageBubble 导入编辑区）
 onEvent('switch-panel', (panel: unknown) => {
   if (typeof panel === 'string') {
     rightPanel.value = panel
   }
 })
-
-// ─── Col 5 当前面板 ───
-const rightPanel = ref<string>('')
-const showAgentEditor = ref(false)
-const showEvolution = ref(false)
-const evolutionSkill = ref<SkillConfig | null>(null)
 
 // Col 2 / Col 3 / Col 5 隐藏
 const isFileTreeCollapsed = ref(false)
