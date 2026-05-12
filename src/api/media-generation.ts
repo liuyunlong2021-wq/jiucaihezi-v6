@@ -157,6 +157,9 @@ async function apiCall(path: string, body: any | null, method = 'POST'): Promise
   if (method !== 'GET' && body) opts.body = JSON.stringify(body)
   const res = await fetch(`${BASE_URL}${path}`, opts)
   if (!res.ok) {
+    if (res.status === 429) {
+      throw new Error('请求过于频繁，请稍后再试')
+    }
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
   }

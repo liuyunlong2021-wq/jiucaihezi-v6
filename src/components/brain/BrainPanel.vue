@@ -1,582 +1,383 @@
 <script setup lang="ts">
 /**
- * BrainPanel.vue — 长脑子面板（karpathy-llm-wiki + darwin-skill 完全体）
- * UI 搬运自 dazi-studio/web/工作台/code.html L1761-1830
- *
- * 功能：
- * 1. 展示每个搭子的知识索引状态
- * 2. 5 步进度条扫描
- * 3. 建议列表（待处理/已采用/已忽略）
- * 4. 进化反哺（darwin-skill: evaluate → improve → test → keep/revert）
+ * BrainPanel.vue — 长脑子面板（简化版）
+ * 两个核心按钮：整理 + 反哺
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref } from 'vue'
 import { useAgentStore } from '@/stores/agentStore'
-import { useBrain } from '@/composables/useBrain'
-import { useEvolution } from '@/composables/useEvolution'
-import type { BrainSuggestion } from '@/composables/useBrain'
+import { useFileStore } from '@/composables/useFileStore'
+import { resolveApiConfig, buildHeaders } from '@/utils/api'
+import { getAll } from '@/utils/idb'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useAgentStore()
+const fileStore = useFileStore()
 
-const {
-  isProcessing,
-  currentStep,
-  stepLabels,
-  suggestions,
-  lintResults,
-  wikiLog,
-  wikiIndex,
-  getSkillBrainStats,
-  runBrainCompilation,
-  runBrainLint,
-  archiveQueryResult,
-  setSuggestionStatus,
-  acceptAllSuggestions,
-  ignoreAllSuggestions,
-  getAcceptedSuggestionsBySkill,
-} = useBrain()
+type Phase = 'idle' | 'organizing' | 'feedback' | 'done'
+const phase = ref<Phase>('idle')
+const progress = ref('')
+const error = ref('')
 
-const { evolveSkill, keepEvolution, isEvolving, evolveStep, evolveStepLabels } = useEvolution()
-
-// ─── 视图切换 ───
-type ViewMode = 'index' | 'processing' | 'result' | 'evolving' | 'evolve-preview' | 'lint-result' | 'log'
-const viewMode = ref<ViewMode>('index')
-const resultTab = ref<'pending' | 'accepted' | 'ignored'>('pending')
-
-// ─── 进化预览状态 ───
-const evolveResults = ref<{ skillId: string; skillName: string; summary: string; newContent: string; oldContent: string }[]>([])
-
-// ─── 搭子知识状态 ───
-const brainStats = computed(() => getSkillBrainStats(store.agents))
-
-// ─── 开始整理 ───
-async function startBrainRun() {
-  viewMode.value = 'processing'
-  await runBrainCompilation(store.agents)
-  viewMode.value = 'result'
+// 反哺建议
+interface Suggestion {
+  skillId: string
+  skillName: string
+  type: string
+  content: string
+  reason: string
+  selected: boolean
 }
+const suggestions = ref<Suggestion[]>([])
+const allSelected = ref(false)
 
-// ─── 体检（Lint） ───
-function startLint() {
-  runBrainLint()
-  viewMode.value = 'lint-result'
-}
+// ─── 整理：全量扫描对话 → 提取知识 → 存入知识库 ───
+async function runOrganize() {
+  phase.value = 'organizing'
+  progress.value = '扫描对话记录...'
+  error.value = ''
 
-// ─── 采用单条建议 → 实际写入搭子 ───
-function acceptSuggestion(s: BrainSuggestion) {
-  setSuggestionStatus(s.id, 'accepted')
-  // 把建议内容追加到搭子的 skillContent
-  const skill = store.agents.find(a => a.id === s.skillId)
-  if (skill) {
-    const appendix = `\n\n---\n[知识反哺 ${new Date().toLocaleDateString('zh-CN')}]\n${s.type === 'rule' ? s.content : s.type === 'trigger' ? `新触发词: ${s.content}` : s.content}`
-    store.updateSkill(s.skillId, {
-      skillContent: skill.skillContent + appendix,
-    })
-  }
-}
-
-// ─── 反哺（darwin-skill 完整流程）───
-async function startFanbu() {
-  // 收集已采用建议按搭子分组，用于生成 wiki 上下文
-  const grouped = getAcceptedSuggestionsBySkill()
-  const skills = store.agents.filter(a => {
-    // 有知识的搭子才能反哺
-    const stat = brainStats.value.find(s => s.skillId === a.id)
-    return stat && (stat.wikiCount > 0 || grouped[a.id])
-  })
-
-  if (skills.length === 0) {
-    alert('没有可反哺的搭子。请先点"整理"收集经验。')
-    return
-  }
-
-  viewMode.value = 'evolving'
-  evolveResults.value = []
-
-  for (const skill of skills) {
-    // 构建 wiki 内容
-    const sug = grouped[skill.id] || []
-    const wikiText = sug.length > 0
-      ? sug.map(s => `[${s.type}] ${s.content}`).join('\n')
-      : `搭子"${skill.name}"的使用经验（自动收集）`
-
-    const result = await evolveSkill(skill, wikiText)
-    if (result.success) {
-      evolveResults.value.push({
-        skillId: skill.id,
-        skillName: skill.name,
-        summary: result.summary,
-        newContent: result.newContent,
-        oldContent: skill.skillContent,
-      })
+  try {
+    const messages = await getAll('messages') as Array<{ role: string; content: string; agentId?: string; agentName?: string }>
+    if (!messages || messages.length === 0) {
+      progress.value = '没有对话记录'
+      phase.value = 'done'
+      return
     }
-  }
 
-  viewMode.value = evolveResults.value.length > 0 ? 'evolve-preview' : 'result'
+    // 按搭子分组对话
+    const grouped: Record<string, string[]> = {}
+    for (let i = 0; i < messages.length - 1; i++) {
+      const m = messages[i]
+      const next = messages[i + 1]
+      if (m.role === 'user' && next?.role === 'assistant') {
+        const key = m.agentId || m.agentName || '通用'
+        if (!grouped[key]) grouped[key] = []
+        grouped[key].push(`用户: ${m.content}\n助手: ${next.content}`)
+      }
+    }
+
+    const groups = Object.entries(grouped)
+    progress.value = `找到 ${groups.length} 组对话，开始提取知识...`
+
+    const config = await resolveApiConfig()
+    let totalExtracted = 0
+
+    for (const [skillId, convos] of groups) {
+      const text = convos.slice(-20).join('\n\n---\n\n') // 最近20条
+      if (text.length < 100) continue
+
+      progress.value = `正在分析: ${skillId} (${convos.length} 条对话)...`
+
+      const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
+        method: 'POST',
+        headers: buildHeaders(config),
+        body: JSON.stringify({
+          model: config.model || 'claude-sonnet-4-6',
+          messages: [
+            { role: 'system', content: ORGANIZE_PROMPT },
+            { role: 'user', content: text.slice(0, 6000) },
+          ],
+          temperature: 0.3,
+          max_tokens: 2000,
+          stream: false,
+        }),
+      })
+
+      if (!res.ok) continue
+      const data = await res.json()
+      const content = data.choices?.[0]?.message?.content || ''
+
+      // 解析 JSON 数组
+      try {
+        const jsonMatch = content.match(/\[[\s\S]*\]/)
+        if (jsonMatch) {
+          const entries = JSON.parse(jsonMatch[0])
+          for (const entry of entries) {
+            await fileStore.addKnowledge({
+              name: entry.title || '知识点',
+              content: entry.content || '',
+              topic: entry.topic || skillId,
+              skillId,
+              indexed: true,
+              metadata: { type: entry.type, confidence: entry.confidence },
+            })
+            totalExtracted++
+          }
+        }
+      } catch {}
+    }
+
+    progress.value = `整理完成，提取了 ${totalExtracted} 条知识`
+    phase.value = 'done'
+  } catch (e: any) {
+    error.value = e.message || '整理失败'
+    phase.value = 'done'
+  }
 }
 
-// ─── 确认采用进化结果（darwin-skill: keep）───
-function confirmEvolve(idx: number) {
-  const r = evolveResults.value[idx]
-  const skill = store.agents.find(a => a.id === r.skillId)
-  if (skill) {
-    const evolved = keepEvolution(skill, r.newContent, r.summary)
-    store.updateSkill(r.skillId, {
-      skillContent: evolved.skillContent,
-      version: evolved.version,
-      evolutionLog: evolved.evolutionLog,
+// ─── 反哺：用知识库升级我的搭子 ───
+async function runFeedback() {
+  phase.value = 'feedback'
+  progress.value = '读取知识库...'
+  error.value = ''
+  suggestions.value = []
+
+  try {
+    const knowledge = await fileStore.loadByCategory('knowledge')
+    if (knowledge.length === 0) {
+      progress.value = '知识库为空，请先整理'
+      phase.value = 'done'
+      return
+    }
+
+    const mySkills = store.getMySkills()
+    if (mySkills.length === 0) {
+      progress.value = '没有搭子可升级'
+      phase.value = 'done'
+      return
+    }
+
+    const config = await resolveApiConfig()
+
+    for (const skill of mySkills) {
+      // 筛选相关知识（按 topic/skillId 匹配）
+      const related = knowledge.filter(k =>
+        k.skillId === skill.id || k.topic === skill.name || k.topic === skill.id
+      )
+      if (related.length === 0) continue
+
+      progress.value = `分析搭子: ${skill.name}...`
+
+      const knowledgeText = related.slice(0, 15).map(k => `- [${k.name}] ${k.content}`).join('\n')
+
+      const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
+        method: 'POST',
+        headers: buildHeaders(config),
+        body: JSON.stringify({
+          model: config.model || 'claude-sonnet-4-6',
+          messages: [
+            { role: 'system', content: FEEDBACK_PROMPT },
+            { role: 'user', content: `## 当前搭子\n名称: ${skill.name}\nSKILL.md:\n${skill.skillContent?.slice(0, 3000)}\n\n## 相关知识库内容\n${knowledgeText}` },
+          ],
+          temperature: 0.4,
+          max_tokens: 2000,
+          stream: false,
+        }),
+      })
+
+      if (!res.ok) continue
+      const data = await res.json()
+      const content = data.choices?.[0]?.message?.content || ''
+
+      try {
+        const jsonMatch = content.match(/\[[\s\S]*\]/)
+        if (jsonMatch) {
+          const items = JSON.parse(jsonMatch[0])
+          for (const item of items) {
+            suggestions.value.push({
+              skillId: skill.id,
+              skillName: skill.name,
+              type: item.type || 'rule',
+              content: item.content || '',
+              reason: item.reason || '',
+              selected: false,
+            })
+          }
+        }
+      } catch {}
+    }
+
+    progress.value = suggestions.value.length > 0
+      ? `生成了 ${suggestions.value.length} 条升级建议`
+      : '没有找到可升级的内容'
+    phase.value = 'done'
+  } catch (e: any) {
+    error.value = e.message || '反哺失败'
+    phase.value = 'done'
+  }
+}
+
+function toggleAllSuggestions() {
+  allSelected.value = !allSelected.value
+  suggestions.value.forEach(s => { s.selected = allSelected.value })
+}
+
+function applySelected() {
+  const selected = suggestions.value.filter(s => s.selected)
+  if (selected.length === 0) return
+
+  // 按搭子分组应用
+  const grouped: Record<string, Suggestion[]> = {}
+  for (const s of selected) {
+    if (!grouped[s.skillId]) grouped[s.skillId] = []
+    grouped[s.skillId].push(s)
+  }
+
+  for (const [skillId, items] of Object.entries(grouped)) {
+    const skill = store.loadSkills().find(s => s.id === skillId)
+    if (!skill) continue
+
+    let newContent = skill.skillContent || ''
+    for (const item of items) {
+      if (item.type === 'rule') {
+        newContent += `\n- ${item.content}`
+      } else if (item.type === 'example') {
+        newContent += `\n\n### 示例\n${item.content}`
+      } else if (item.type === 'reference') {
+        newContent += `\n- 参考: ${item.content}`
+      } else {
+        newContent += `\n- ${item.content}`
+      }
+    }
+
+    store.updateSkill(skillId, {
+      skillContent: newContent,
+      version: (skill.version || 1) + 1,
     })
   }
-  evolveResults.value.splice(idx, 1)
-  if (evolveResults.value.length === 0) viewMode.value = 'index'
+
+  progress.value = `已应用 ${selected.length} 条升级到 ${Object.keys(grouped).length} 个搭子`
+  suggestions.value = []
 }
 
-// ─── 拒绝进化（darwin-skill: revert）───
-function rejectEvolve(idx: number) {
-  evolveResults.value.splice(idx, 1)
-  if (evolveResults.value.length === 0) viewMode.value = 'index'
-}
+// ─── Prompts ───
+const ORGANIZE_PROMPT = `你是知识编译引擎（llm-wiki-skill）。从以下对话记录中提取可复用的结构化知识。
 
-// ─── 建议过滤 ───
-const filteredSuggestions = computed(() =>
-  suggestions.value.filter(s => s.status === resultTab.value)
-)
-
-const pendingCount = computed(() => suggestions.value.filter(s => s.status === 'pending').length)
-const acceptedCount = computed(() => suggestions.value.filter(s => s.status === 'accepted').length)
-const ignoredCount = computed(() => suggestions.value.filter(s => s.status === 'ignored').length)
-
-function typeLabel(type: string) {
-  const map: Record<string, string> = {
-    rule: '📋 规则',
-    reference: '📎 参考资料',
-    example: '💬 示例',
-    trigger: '🏷️ 触发词',
+## 输出要求
+输出一个JSON数组，每个知识点是一个对象：
+[
+  {
+    "title": "知识点标题（一句话描述）",
+    "content": "具体内容（规则/方法/示例/模式）",
+    "topic": "所属搭子或主题",
+    "type": "rule | reference | example | pattern",
+    "confidence": "EXTRACTED | INFERRED"
   }
-  return map[type] || type
-}
+]
 
-function formatDate(ts: number) {
-  if (!ts) return '从未整理'
-  return new Date(ts).toLocaleDateString('zh-CN')
-}
+## 提取原则
+- 只提取可复用的知识，忽略一次性对话
+- 优先提取：规则约束、工作流模式、输出格式规范、常见错误修正
+- 用 EXTRACTED 标记直接从对话中提取的，INFERRED 标记推断的
+- 如果没有可提取的知识，返回空数组 []`
+
+const FEEDBACK_PROMPT = `你是搭子进化引擎（Skill_Seekers）。基于知识库中积累的经验，为搭子提出具体的升级建议。
+
+## 输出要求
+输出JSON数组，每项是一条升级建议：
+[
+  {
+    "type": "rule | reference | example | trigger | workflow",
+    "content": "具体要添加/修改的内容",
+    "reason": "为什么要做这个改动（基于哪条知识）"
+  }
+]
+
+## 进化原则
+- 只建议有知识库证据支持的改动
+- 优先加强：规则约束（防止重复错误）、输出格式（提升一致性）、示例（增加覆盖）
+- 不要删除现有有效规则
+- 如果没有可建议的改动，返回空数组 []`
 </script>
 
 <template>
-  <div class="brain-panel">
-    <div class="brain-head">
-      <div class="brain-title-row">
-        <span class="mso brain-icon">psychology</span>
-        <div>
-          <div class="brain-title">长脑子</div>
-          <div class="brain-subtitle">把你的历史对话整理成经验，让搭子自动变聪明。</div>
-        </div>
-      </div>
-      <button class="brain-close" @click="emit('close')">&times;</button>
+  <div class="bp">
+    <div class="bp-head">
+      <span class="mso" style="font-size:20px;color:var(--olive)">psychology</span>
+      <span class="bp-title">长脑子</span>
+      <button class="bp-close" @click="emit('close')"><span class="mso">close</span></button>
     </div>
 
-    <!-- ─── 索引视图（默认） ─── -->
-    <div v-if="viewMode === 'index'" class="brain-body">
-      <!-- 搭子知识状态列表 -->
-      <div class="brain-stats-list">
-        <div v-for="stat in brainStats" :key="stat.skillId" class="brain-stat-row">
-          <div class="stat-name">{{ stat.skillName }}</div>
-          <div class="stat-detail">
-            <span>对话 <strong>{{ stat.rawCount }}</strong> 条</span>
-            <span>经验 <strong>{{ stat.wikiCount }}</strong> 篇</span>
-            <span class="stat-date">{{ formatDate(stat.lastCompiled) }}</span>
-          </div>
-          <div v-if="stat.unindexedCount > 0" class="stat-badge">
-            {{ stat.unindexedCount }} 条待整理
-          </div>
+    <!-- 两个核心按钮 -->
+    <div class="bp-actions">
+      <button class="bp-action-btn" :disabled="phase === 'organizing'" @click="runOrganize">
+        <span class="mso">auto_stories</span>
+        <div class="bp-action-info">
+          <span class="bp-action-name">整理</span>
+          <span class="bp-action-desc">扫描对话记录，提取知识到知识库</span>
         </div>
-        <div v-if="brainStats.length === 0" class="brain-empty">
-          还没有搭子，先创建一个吧。
+      </button>
+      <button class="bp-action-btn" :disabled="phase === 'feedback'" @click="runFeedback">
+        <span class="mso">upgrade</span>
+        <div class="bp-action-info">
+          <span class="bp-action-name">反哺</span>
+          <span class="bp-action-desc">用知识库升级我的搭子</span>
         </div>
-      </div>
-
-      <!-- 功能说明（搬运自 dazi L1783-1785） -->
-      <div class="brain-start-card">
-        <div class="brain-start-points">
-          <div class="brain-start-point">
-            <span class="mso">psychology_alt</span>
-            <strong>发现重复问题</strong>
-            <span>找出反复遇到的工作难点。</span>
-          </div>
-          <div class="brain-start-point">
-            <span class="mso">tune</span>
-            <strong>给出清楚建议</strong>
-            <span>说明建议怎么做，影响哪个搭子。</span>
-          </div>
-          <div class="brain-start-point">
-            <span class="mso">verified</span>
-            <strong>点一下采用</strong>
-            <span>系统会默默完成增强或创建。</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 操作按钮 -->
-      <div class="brain-action-row">
-        <button class="brain-primary-btn" @click="startBrainRun">
-          <span class="mso">play_arrow</span>整理
-        </button>
-        <button class="brain-primary-btn brain-fb-btn" @click="startFanbu" title="将知识库内容对照搭子进行升级（darwin-skill）">
-          <span class="mso">auto_fix_high</span>反哺
-        </button>
-        <button class="brain-secondary-btn brain-lint-btn" @click="startLint" title="知识库体检（karpathy-wiki lint）">
-          <span class="mso">health_and_safety</span>体检
-        </button>
-        <button class="brain-secondary-btn" @click="viewMode = 'log'" title="操作日志（wiki/log.md）">
-          <span class="mso">receipt_long</span>日志
-        </button>
-        <button class="brain-secondary-btn" @click="viewMode = 'result'" v-if="suggestions.length > 0">
-          <span class="mso">history</span>上次结果
-        </button>
-      </div>
+      </button>
     </div>
 
-    <!-- ─── 处理中视图（搬运自 dazi L1793-1807） ─── -->
-    <div v-if="viewMode === 'processing'" class="brain-body">
-      <div class="brain-processing-card">
-        <div class="brain-result-title">正在帮你整理经验</div>
-        <div class="brain-result-copy">系统正在阅读资料，稍等一下就能看到建议。</div>
+    <!-- 进度 -->
+    <div v-if="progress" class="bp-progress">
+      <span v-if="phase === 'organizing' || phase === 'feedback'" class="bp-spinner"></span>
+      <span>{{ progress }}</span>
+    </div>
+    <div v-if="error" class="bp-error">{{ error }}</div>
 
-        <div class="brain-processing-steps">
-          <div
-            v-for="i in 5"
-            :key="i"
-            class="brain-step"
-            :class="{ active: currentStep === i, done: currentStep > i }"
-          >
-            <span class="brain-step-dot">{{ currentStep > i ? '✓' : i }}</span>
-            <div class="brain-step-label">{{ stepLabels[i] }}</div>
-            <div class="brain-step-note">
-              {{ currentStep > i ? '完成' : currentStep === i ? '进行中...' : '等待中' }}
+    <!-- 反哺建议列表 -->
+    <div v-if="suggestions.length > 0" class="bp-suggestions">
+      <div class="bp-sug-head">
+        <span>升级建议 ({{ suggestions.length }})</span>
+        <button class="bp-sug-all" @click="toggleAllSuggestions">{{ allSelected ? '取消全选' : '全选' }}</button>
+      </div>
+      <div class="bp-sug-list">
+        <div v-for="(s, i) in suggestions" :key="i" class="bp-sug-item" @click="s.selected = !s.selected">
+          <input type="checkbox" :checked="s.selected" />
+          <div class="bp-sug-content">
+            <div class="bp-sug-meta">
+              <span class="bp-sug-skill">{{ s.skillName }}</span>
+              <span class="bp-sug-type">{{ s.type }}</span>
             </div>
+            <div class="bp-sug-text">{{ s.content }}</div>
+            <div class="bp-sug-reason">{{ s.reason }}</div>
           </div>
         </div>
       </div>
-    </div>
-
-    <!-- ─── 结果视图（搬运自 dazi L1809-1828） ─── -->
-    <div v-if="viewMode === 'result'" class="brain-body">
-      <div class="brain-result-top">
-        <div>
-          <div class="brain-result-title">整理完成</div>
-          <div class="brain-result-copy">本次发现 {{ suggestions.length }} 条经验建议。</div>
-        </div>
-        <div class="brain-action-row" v-if="pendingCount > 0">
-          <button class="brain-soft-btn" @click="acceptAllSuggestions">全部采用</button>
-          <button class="brain-secondary-btn" @click="ignoreAllSuggestions">全部忽略</button>
-        </div>
-      </div>
-
-      <!-- Tabs（搬运自 dazi L1822-1826） -->
-      <div class="brain-tabs">
-        <button
-          class="brain-tab"
-          :class="{ active: resultTab === 'pending' }"
-          @click="resultTab = 'pending'"
-        >待处理 {{ pendingCount }}</button>
-        <button
-          class="brain-tab"
-          :class="{ active: resultTab === 'accepted' }"
-          @click="resultTab = 'accepted'"
-        >已采用 {{ acceptedCount }}</button>
-        <button
-          class="brain-tab"
-          :class="{ active: resultTab === 'ignored' }"
-          @click="resultTab = 'ignored'"
-        >已忽略 {{ ignoredCount }}</button>
-      </div>
-
-      <!-- 建议列表 -->
-      <div class="brain-suggestion-list">
-        <div v-for="s in filteredSuggestions" :key="s.id" class="brain-suggestion-card">
-          <div class="sug-head">
-            <span class="sug-skill">{{ s.skillName }}</span>
-            <span class="sug-type">{{ typeLabel(s.type) }}</span>
-          </div>
-          <div class="sug-content">{{ s.content }}</div>
-          <div class="sug-actions" v-if="s.status === 'pending'">
-            <button class="sug-btn accept" @click="acceptSuggestion(s)">采用</button>
-            <button class="sug-btn ignore" @click="setSuggestionStatus(s.id, 'ignored')">忽略</button>
-          </div>
-        </div>
-        <div v-if="filteredSuggestions.length === 0" class="brain-empty">
-          暂无{{ resultTab === 'pending' ? '待处理' : resultTab === 'accepted' ? '已采用' : '已忽略' }}的建议。
-        </div>
-      </div>
-
-      <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
-    </div>
-
-    <!-- ─── 进化中视图 ─── -->
-    <div v-if="viewMode === 'evolving'" class="brain-body">
-      <div class="brain-processing-card">
-        <div class="brain-result-title">🧬 正在进化搭子</div>
-        <div class="brain-result-copy">正在使用 darwin-skill 引擎升级搭子能力...</div>
-        <div class="brain-processing-steps">
-          <div
-            v-for="i in 4"
-            :key="i"
-            class="brain-step"
-            :class="{ active: evolveStep === i, done: evolveStep > i }"
-          >
-            <span class="brain-step-dot">{{ evolveStep > i ? '✓' : i }}</span>
-            <div class="brain-step-label">{{ evolveStepLabels[i] }}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ─── 进化预览视图（darwin-skill: test → keep/revert）─── -->
-    <div v-if="viewMode === 'evolve-preview'" class="brain-body">
-      <div class="brain-result-title">🧬 进化方案预览</div>
-      <div class="brain-result-copy">以下搭子有升级方案，请逐个确认。</div>
-
-      <div v-for="(r, idx) in evolveResults" :key="r.skillId" class="evolve-card">
-        <div class="evolve-card-head">
-          <strong>{{ r.skillName }}</strong>
-          <span class="evolve-badge">v{{ (store.agents.find(a => a.id === r.skillId)?.version || 1) }} → v{{ (store.agents.find(a => a.id === r.skillId)?.version || 1) + 1 }}</span>
-        </div>
-        <div class="evolve-summary">{{ r.summary }}</div>
-        <div class="evolve-diff">
-          <div class="evolve-diff-col">
-            <div class="evolve-diff-label">原版（前 200 字）</div>
-            <pre class="evolve-pre">{{ r.oldContent.slice(0, 200) }}...</pre>
-          </div>
-          <div class="evolve-diff-col evolve-diff-new">
-            <div class="evolve-diff-label">新版（前 200 字）</div>
-            <pre class="evolve-pre">{{ r.newContent.slice(0, 200) }}...</pre>
-          </div>
-        </div>
-        <div class="evolve-actions">
-          <button class="sug-btn accept" @click="confirmEvolve(idx)">✅ 采用</button>
-          <button class="sug-btn ignore" @click="rejectEvolve(idx)">↩ 回滚</button>
-        </div>
-      </div>
-
-      <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
-    </div>
-
-    <!-- ─── 体检结果视图（karpathy-wiki Lint） ─── -->
-    <div v-if="viewMode === 'lint-result'" class="brain-body">
-      <div class="brain-result-title">🩺 知识库体检报告</div>
-      <div class="brain-result-copy">
-        {{ lintResults.filter(i => i.severity === 'auto-fixed').length }} 个自动修复，
-        {{ lintResults.filter(i => i.severity === 'report').length }} 个需关注
-      </div>
-      <div class="brain-suggestion-list">
-        <div v-for="issue in lintResults" :key="issue.id" class="brain-suggestion-card">
-          <div class="sug-head">
-            <span class="sug-type" :class="{ 'lint-fixed': issue.severity === 'auto-fixed', 'lint-report': issue.severity === 'report' }">
-              {{ issue.severity === 'auto-fixed' ? '✅ 已修复' : '⚠️ 需关注' }}
-            </span>
-            <span class="sug-skill">{{ issue.category }}</span>
-          </div>
-          <div class="sug-content">{{ issue.description }}</div>
-        </div>
-        <div v-if="lintResults.length === 0" class="brain-empty">知识库状态良好，没有发现问题。</div>
-      </div>
-      <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
-    </div>
-
-    <!-- ─── 操作日志视图（wiki/log.md） ─── -->
-    <div v-if="viewMode === 'log'" class="brain-body">
-      <div class="brain-result-title">📋 操作日志</div>
-      <div class="brain-result-copy">wiki/log.md — append-only 操作记录</div>
-      <div class="brain-suggestion-list">
-        <div v-for="entry in [...wikiLog].reverse().slice(0, 50)" :key="entry.id" class="brain-suggestion-card">
-          <div class="sug-head">
-            <span class="sug-type log-op">{{ entry.operation }}</span>
-            <span class="sug-skill">{{ new Date(entry.timestamp).toLocaleString('zh-CN') }}</span>
-          </div>
-          <div class="sug-content">{{ entry.description }}</div>
-        </div>
-        <div v-if="wikiLog.length === 0" class="brain-empty">暂无操作记录。</div>
-      </div>
-      <button class="brain-back-btn" @click="viewMode = 'index'">← 返回索引</button>
+      <button class="bp-apply-btn" :disabled="!suggestions.some(s => s.selected)" @click="applySelected">
+        确认应用 ({{ suggestions.filter(s => s.selected).length }})
+      </button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.brain-panel { height: 100%; display: flex; flex-direction: column; }
-.brain-head {
-  display: flex; align-items: flex-start; justify-content: space-between;
-  padding: 16px 20px; border-bottom: 1px solid var(--line);
+.bp { display: flex; flex-direction: column; height: 100%; background: var(--surface); }
+.bp-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.bp-title { font-size: 15px; font-weight: 700; color: var(--ink1); flex: 1; }
+.bp-close { border: none; background: none; color: var(--ink3); cursor: pointer; padding: 4px; }
+.bp-actions { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.bp-action-btn {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px; border-radius: 12px;
+  border: 2px solid var(--line); background: var(--paper);
+  cursor: pointer; font-family: inherit; text-align: left;
+  transition: all .15s;
 }
-.brain-title-row { display: flex; align-items: center; gap: 10px; }
-.brain-icon { font-size: 28px; color: var(--olive); }
-.brain-title { font-size: 16px; font-weight: 700; color: var(--ink1); }
-.brain-subtitle { font-size: 12px; color: var(--ink3); margin-top: 2px; }
-.brain-close {
-  background: none; border: none; font-size: 22px;
-  color: var(--ink3); cursor: pointer;
+.bp-action-btn:hover { border-color: var(--olive); box-shadow: 0 2px 8px rgba(0,0,0,.05); }
+.bp-action-btn:disabled { opacity: .5; cursor: not-allowed; }
+.bp-action-btn .mso { font-size: 28px; color: var(--olive); flex-shrink: 0; }
+.bp-action-info { display: flex; flex-direction: column; gap: 2px; }
+.bp-action-name { font-size: 15px; font-weight: 700; color: var(--ink1); }
+.bp-action-desc { font-size: 12px; color: var(--ink3); }
+.bp-progress { padding: 12px 16px; font-size: 13px; color: var(--ink2); display: flex; align-items: center; gap: 8px; }
+.bp-spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--olive); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.bp-error { padding: 8px 16px; font-size: 12px; color: #e53935; }
+.bp-suggestions { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 0 16px 16px; }
+.bp-sug-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; font-size: 13px; font-weight: 700; color: var(--ink1); }
+.bp-sug-all { border: none; background: none; color: var(--olive); font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.bp-sug-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.bp-sug-item { display: flex; gap: 8px; padding: 10px; border-radius: 8px; border: 1px solid var(--line); cursor: pointer; }
+.bp-sug-item:hover { background: var(--surface-alt); }
+.bp-sug-content { flex: 1; min-width: 0; }
+.bp-sug-meta { display: flex; gap: 6px; margin-bottom: 4px; }
+.bp-sug-skill { font-size: 11px; font-weight: 600; color: var(--olive); background: rgba(107,142,35,.1); padding: 1px 6px; border-radius: 4px; }
+.bp-sug-type { font-size: 10px; color: var(--ink3); background: var(--surface); padding: 1px 6px; border-radius: 4px; }
+.bp-sug-text { font-size: 12px; color: var(--ink1); line-height: 1.5; }
+.bp-sug-reason { font-size: 11px; color: var(--ink3); margin-top: 2px; }
+.bp-apply-btn {
+  margin-top: 12px; padding: 10px; border-radius: 8px; border: none;
+  background: var(--olive); color: #fff; font-size: 14px; font-weight: 700;
+  cursor: pointer; font-family: inherit;
 }
-.brain-body {
-  flex: 1; overflow-y: auto; padding: 16px 20px;
-}
-
-/* 索引状态列表 */
-.brain-stats-list { margin-bottom: 16px; }
-.brain-stat-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 12px; border-radius: 8px;
-  border: 1px solid var(--line); margin-bottom: 8px;
-}
-.stat-name { font-weight: 700; font-size: 13px; color: var(--ink1); min-width: 80px; }
-.stat-detail {
-  display: flex; gap: 12px; font-size: 12px; color: var(--ink3); flex: 1;
-}
-.stat-detail strong { color: var(--ink1); }
-.stat-date { margin-left: auto; }
-.stat-badge {
-  font-size: 11px; padding: 2px 8px; border-radius: 10px;
-  background: var(--olive); color: #fff; font-weight: 600;
-}
-
-/* 功能说明（搬运自 dazi-studio） */
-.brain-start-card { margin: 16px 0; }
-.brain-start-points { display: flex; flex-direction: column; gap: 10px; }
-.brain-start-point {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--ink2);
-}
-.brain-start-point .mso { font-size: 20px; color: var(--olive); }
-.brain-start-point strong { color: var(--ink1); min-width: 80px; }
-
-/* 操作按钮 */
-.brain-action-row { display: flex; gap: 10px; margin-top: 16px; }
-.brain-primary-btn {
-  display: flex; align-items: center; gap: 6px;
-  padding: 10px 22px; border: none; border-radius: 10px;
-  background: var(--olive); color: #fff;
-  font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit;
-}
-.brain-secondary-btn {
-  display: flex; align-items: center; gap: 6px;
-  padding: 10px 18px; border-radius: 10px;
-  border: 1.5px solid var(--line); background: var(--paper);
-  font-size: 13px; color: var(--ink2); cursor: pointer; font-family: inherit;
-}
-.brain-soft-btn {
-  padding: 8px 16px; border: none; border-radius: 8px;
-  background: var(--olive); color: #fff;
-  font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit;
-}
-
-/* 进度条 */
-.brain-processing-card { padding: 16px 0; }
-.brain-result-title { font-size: 16px; font-weight: 700; color: var(--ink1); }
-.brain-result-copy { font-size: 13px; color: var(--ink3); margin: 4px 0 16px; }
-.brain-processing-steps { display: flex; flex-direction: column; gap: 12px; }
-.brain-step {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px; border-radius: 8px;
-  border: 1px solid var(--line); opacity: .5;
-  transition: all .2s;
-}
-.brain-step.active { opacity: 1; border-color: var(--olive); background: var(--bg); }
-.brain-step.done { opacity: .8; }
-.brain-step-dot {
-  width: 24px; height: 24px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 700;
-  background: var(--line); color: var(--ink3);
-}
-.brain-step.active .brain-step-dot { background: var(--olive); color: #fff; }
-.brain-step.done .brain-step-dot { background: #4a7; color: #fff; }
-.brain-step-label { font-size: 14px; font-weight: 600; color: var(--ink1); }
-.brain-step-note { margin-left: auto; font-size: 12px; color: var(--ink3); }
-
-/* 结果 */
-.brain-result-top {
-  display: flex; justify-content: space-between; align-items: flex-start;
-  margin-bottom: 16px;
-}
-.brain-tabs { display: flex; gap: 0; margin-bottom: 12px; }
-.brain-tab {
-  flex: 1; padding: 8px; border: none; background: none;
-  font-size: 13px; font-weight: 600; color: var(--ink3);
-  border-bottom: 2px solid transparent; cursor: pointer; font-family: inherit;
-}
-.brain-tab.active { color: var(--olive); border-bottom-color: var(--olive); }
-
-/* 建议卡片 */
-.brain-suggestion-list { display: flex; flex-direction: column; gap: 8px; }
-.brain-suggestion-card {
-  padding: 12px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--bg);
-}
-.sug-head { display: flex; gap: 8px; margin-bottom: 6px; }
-.sug-skill { font-size: 12px; font-weight: 700; color: var(--olive); }
-.sug-type { font-size: 11px; color: var(--ink3); }
-.sug-content { font-size: 13px; color: var(--ink1); line-height: 1.5; }
-.sug-actions { display: flex; gap: 8px; margin-top: 8px; }
-.sug-btn {
-  padding: 4px 14px; border-radius: 6px; border: none;
-  font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
-}
-.sug-btn.accept { background: var(--olive); color: #fff; }
-.sug-btn.ignore { background: var(--line); color: var(--ink2); }
-
-.brain-empty { text-align: center; padding: 24px; color: var(--ink3); font-size: 13px; }
-.brain-back-btn {
-  display: block; margin: 16px auto 0; padding: 8px 16px;
-  border: 1px solid var(--line); border-radius: 8px;
-  background: var(--paper); color: var(--ink2);
-  font-size: 13px; cursor: pointer; font-family: inherit;
-}
-.brain-fb-btn { background: #e67e22; }
-.brain-fb-btn:hover { background: #d35400; }
-
-/* 进化预览卡片 */
-.evolve-card {
-  padding: 14px; border-radius: 10px;
-  border: 1px solid var(--line); margin-bottom: 12px;
-  background: var(--bg);
-}
-.evolve-card-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px;
-}
-.evolve-card-head strong { font-size: 14px; color: var(--ink1); }
-.evolve-badge {
-  font-size: 11px; padding: 2px 8px; border-radius: 10px;
-  background: rgba(46, 125, 50, 0.1); color: #2e7d32; font-weight: 600;
-}
-.evolve-summary {
-  font-size: 12px; color: var(--ink2); line-height: 1.7;
-  margin-bottom: 10px; white-space: pre-line;
-}
-.evolve-diff { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-.evolve-diff-col {
-  border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
-}
-.evolve-diff-label {
-  padding: 4px 8px; font-size: 11px; font-weight: 600;
-  background: var(--surface-alt); color: var(--ink3);
-  border-bottom: 1px solid var(--line);
-}
-.evolve-diff-new .evolve-diff-label { background: rgba(46, 125, 50, 0.06); color: #2e7d32; }
-.evolve-pre {
-  padding: 8px; font-size: 11px; line-height: 1.5;
-  color: var(--ink2); white-space: pre-wrap; word-break: break-all;
-  max-height: 120px; overflow-y: auto; margin: 0;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-}
-.evolve-actions { display: flex; gap: 8px; }
-
-/* Lint 体检 */
-.brain-lint-btn { border-color: #4a7; }
-.lint-fixed { color: #2e7d32; font-weight: 600; }
-.lint-report { color: #e67e22; font-weight: 600; }
-.log-op {
-  display: inline-block; padding: 1px 6px; border-radius: 4px;
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  background: rgba(107,142,35,.1); color: var(--olive);
-}
+.bp-apply-btn:disabled { opacity: .4; cursor: not-allowed; }
 </style>

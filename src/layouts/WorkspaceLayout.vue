@@ -58,6 +58,10 @@ function openEvolution(skill: SkillConfig) {
 }
 
 function onRailSwitch(mode: string) {
+  if (mode === 'files') {
+    isFileTreeCollapsed.value = !isFileTreeCollapsed.value
+    return
+  }
   if (rightPanel.value === mode) {
     rightPanel.value = ''
   } else {
@@ -348,7 +352,7 @@ function onResizeEnd() {
         <CreationPanel v-else-if="rightPanel === 'creation'" />
 
         <!-- 存储空间 -->
-        <StoragePanel v-else-if="rightPanel === 'storage'" />
+        <!-- 存储空间（已移到第二列文件面板） -->
 
         <!-- 设置 -->
         <SettingsPanel v-else-if="rightPanel === 'settings'" />

@@ -20,7 +20,7 @@ const tabs = [
   { key: 'brain',    icon: 'psychology',              label: '长脑子' },
   { key: 'editor',   icon: 'edit_note',               label: '编辑区' },
   { key: 'creation', icon: 'photo_camera',            label: '创作面板' },
-  { key: 'storage',  icon: 'inventory_2',             label: '存储空间' },
+  { key: 'files',    icon: 'folder_open',             label: '文件' },
 ]
 
 const bottomTabs = [

@@ -14,7 +14,7 @@ import { useChat } from '@/composables/useChat'
 import { useAgentStore, PILL_MODELS } from '@/stores/agentStore'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useSkillRouter } from '@/composables/useSkillRouter'
-import { ingestConversation } from '@/composables/useBrain'
+import { useFileStore } from '@/composables/useFileStore'
 import MessageBubble from './MessageBubble.vue'
 import FileUploader from './FileUploader.vue'
 import ChatScrollNav from './ChatScrollNav.vue'
@@ -181,11 +181,20 @@ async function handleSend() {
     messages.value,
   )
 
-  // 6. karpathy-wiki 自动收集
-  if (learningEnabled.value && agentStore.currentAgent) {
+  // 6. 整理模式：自动将对话存入知识库
+  if (learningEnabled.value) {
     const lastTwo = messages.value.slice(-2)
     const convo = lastTwo.map(m => `${m.role}: ${m.content}`).join('\n')
-    ingestConversation(agentStore.currentAgent.id, convo)
+    const skillId = agentStore.currentAgent?.id || 'general'
+    const topic = agentStore.currentAgent?.name || '通用'
+    const fs = useFileStore()
+    fs.addKnowledge({
+      name: `对话_${new Date().toLocaleTimeString('zh-CN')}`,
+      content: convo,
+      topic,
+      skillId,
+      indexed: false,
+    })
   }
 }
 
@@ -339,11 +348,11 @@ function onDrop(e: DragEvent) {
             </button>
           </div>
         </div>
-        <!-- 学习药丸开关 -->
+        <!-- 整理药丸开关 -->
         <button class="cp-pill-toggle" :class="{ on: learningEnabled }"
-                title="学习模式（自动摄入对话到知识库）" @click="toggleLearning">
+                title="整理模式（自动将对话整理到知识库）" @click="toggleLearning">
           <span class="cp-pill-dot"></span>
-          <span class="cp-pill-text">学习</span>
+          <span class="cp-pill-text">整理</span>
         </button>
       </div>
     </div>
