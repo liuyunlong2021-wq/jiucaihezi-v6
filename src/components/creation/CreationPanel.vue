@@ -101,15 +101,45 @@ function openLightbox(index: number) {
 function closeLightbox() {
   lbShow.value = false
 }
-function downloadResult(index: number) {
+
+/** 强制另存为（fetch → blob → objectURL + a.download） */
+async function downloadResult(index: number) {
   const r = cpState.results[index]
   if (!r || !r.url) return
-  const a = document.createElement('a')
-  a.href = r.url
-  a.download = `creation_${r.type}_${Date.now()}.${r.type === 'video' ? 'mp4' : r.type === 'audio' ? 'mp3' : 'png'}`
-  a.target = '_blank'
-  a.click()
+  try {
+    const res = await fetch(r.url)
+    const blob = await res.blob()
+    const ext = r.type === 'video' ? 'mp4' : r.type === 'audio' ? 'mp3' : 'png'
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = `creation_${r.type}_${Date.now()}.${ext}`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+  } catch {
+    // 降级：直接打开
+    window.open(r.url, '_blank')
+  }
 }
+
+/** 引用：将画廊素材添加到输入框参考文件中 */
+async function referenceResult(index: number) {
+  const r = cpState.results[index]
+  if (!r || !r.url) return
+  try {
+    const res = await fetch(r.url)
+    const blob = await res.blob()
+    const ext = r.type === 'video' ? 'mp4' : r.type === 'audio' ? 'mp3' : 'png'
+    const mime = r.type === 'video' ? 'video/mp4' : r.type === 'audio' ? 'audio/mpeg' : 'image/png'
+    const file = new File([blob], `ref_${Date.now()}.${ext}`, { type: mime })
+    addFiles([file])
+  } catch (e: any) {
+    alert('引用失败: ' + (e.message || e))
+  }
+}
+
 function deleteResult(index: number) {
   cpState.results.splice(index, 1)
   if (lbIndex.value === index) closeLightbox()
@@ -155,7 +185,7 @@ const canSend = computed(() =>
           :content="r.content"
           :index="i"
           @preview="openLightbox"
-          @download="downloadResult"
+          @reference="referenceResult"
           @delete="deleteResult"
         />
       </template>

@@ -16,7 +16,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   preview: [index: number]
-  download: [index: number]
+  reference: [index: number]
   delete: [index: number]
 }>()
 
@@ -48,17 +48,16 @@ const isText = computed(() => props.type === 'text')
     <!-- 已生成标记 -->
     <div class="gc-card-tag"><span class="mso">check_circle</span>已生成</div>
 
-    <!-- 悬浮操作栏 -->
+    <!-- 悬浮操作栏 — 纯图标 -->
     <div class="gc-card-actions">
-      <button class="gc-act" @click.stop="emit('preview', index)">
-        <span class="mso">{{ isVideo || isAudio ? 'play_arrow' : 'open_in_full' }}</span>
-        {{ isVideo || isAudio ? '预览' : '查看' }}
+      <button class="gc-act" @click.stop="emit('preview', index)" title="查看">
+        <span class="mso">visibility</span>
       </button>
-      <button v-if="!isText" class="gc-act" @click.stop="emit('download', index)">
-        <span class="mso">download</span>下载
+      <button v-if="!isText" class="gc-act" @click.stop="emit('reference', index)" title="引用到输入框">
+        <span class="mso">arrow_downward</span>
       </button>
-      <button class="gc-act danger" @click.stop="emit('delete', index)">
-        <span class="mso">delete</span>删除
+      <button class="gc-act danger" @click.stop="emit('delete', index)" title="删除">
+        <span class="mso">delete_outline</span>
       </button>
     </div>
   </div>
@@ -119,15 +118,15 @@ const isText = computed(() => props.type === 'text')
 }
 .gc-card:hover .gc-card-actions { opacity: 1; pointer-events: auto; }
 .gc-act {
-  display: inline-flex; align-items: center; gap: 3px;
+  display: inline-flex; align-items: center; justify-content: center;
   background: rgba(255,255,255,.18); backdrop-filter: blur(8px);
   border: 1px solid rgba(255,255,255,.25); color: #fff;
-  font-size: 11px; font-weight: 600; padding: 4px 10px;
-  border-radius: 8px; cursor: pointer; font-family: inherit;
-  transition: background .15s; white-space: nowrap;
+  width: 32px; height: 32px; padding: 0;
+  border-radius: 50%; cursor: pointer; font-family: inherit;
+  transition: background .15s, transform .12s;
 }
-.gc-act:hover { background: rgba(255,255,255,.32); }
-.gc-act.danger { background: rgba(210,61,61,.82); border-color: rgba(255,255,255,.22); }
-.gc-act.danger:hover { background: rgba(190,42,42,.94); }
-.gc-act .mso { font-size: 13px; }
+.gc-act:hover { background: rgba(255,255,255,.36); transform: scale(1.1); }
+.gc-act.danger { background: rgba(210,61,61,.72); border-color: rgba(255,255,255,.22); }
+.gc-act.danger:hover { background: rgba(190,42,42,.94); transform: scale(1.1); }
+.gc-act .mso { font-size: 16px; }
 </style>

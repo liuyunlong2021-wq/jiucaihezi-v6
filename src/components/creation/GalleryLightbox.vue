@@ -46,11 +46,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
       <pre v-else-if="type === 'text'" class="lb-media lb-text">{{ content || '无返回内容' }}</pre>
 
       <div class="lb-actions">
-        <button v-if="type !== 'text'" class="lb-btn primary" @click="emit('download')">
-          <span class="mso" style="font-size:16px">download</span>下载
+        <button v-if="type !== 'text'" class="lb-btn primary" @click="emit('download')" title="保存到本地">
+          <span class="mso" style="font-size:18px">download</span>
         </button>
-        <button class="lb-btn ghost" @click="emit('close')">
-          <span class="mso" style="font-size:16px">close</span>关闭
+        <button class="lb-btn ghost" @click="emit('close')" title="关闭">
+          <span class="mso" style="font-size:18px">close</span>
         </button>
       </div>
     </div>
@@ -91,18 +91,18 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
   white-space: pre-wrap; word-break: break-word;
 }
 
-.lb-actions { display: flex; gap: 10px; }
+.lb-actions { display: flex; gap: 12px; }
 .lb-btn {
-  padding: 8px 20px; border-radius: 20px; border: none;
+  width: 44px; height: 44px; border-radius: 50%; border: none;
   font-size: 13px; font-weight: 600; cursor: pointer;
-  display: flex; align-items: center; gap: 6px;
+  display: flex; align-items: center; justify-content: center;
   font-family: inherit; transition: all .15s;
 }
 .lb-btn.primary { background: var(--olive); color: #fff; }
-.lb-btn.primary:hover { background: var(--olive-dark); }
+.lb-btn.primary:hover { background: var(--olive-dark); transform: scale(1.08); }
 .lb-btn.ghost {
   background: rgba(255,255,255,.12); color: #fff;
   border: 1px solid rgba(255,255,255,.25);
 }
-.lb-btn.ghost:hover { background: rgba(255,255,255,.22); }
+.lb-btn.ghost:hover { background: rgba(255,255,255,.22); transform: scale(1.08); }
 </style>
