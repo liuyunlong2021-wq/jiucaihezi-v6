@@ -92,17 +92,21 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
     defDur: 8,
   },
 
-  // ═══ 视频 — Seedance 2.0 ═══
+  // ═══ 视频 — Seedance 2.0 Pro ═══
   'seedance-2.0': {
-    label: 'Seedance 2.0',
+    label: 'Seedance 2.0 Pro',
     tasks: ['text-video', 'image-video'],
     provider: 'newapi-video',
-    modelName: 'seedance-2.0',
-    // seedance-2.0-fast-use-guide.md
-    ar: ['4:3', '16:9', '9:16', '1:1', '21:9', '3:4', '2:3', '3:2'],
+    modelName: 'seedance-2-0-pro',
+    // 文档: ratio 支持 auto/21:9/16:9/4:3/1:1/3:4/9:16
+    ar: ['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
     defAr: '16:9',
-    dur: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
-    defDur: 5,
+    // 文档: duration 4-15 秒整数
+    dur: [4, 15],
+    defDur: 8,
+    // Pro 支持 resolution: 480p/720p/1080p
+    res: ['480p', '720p', '1080p'],
+    defRes: '720p',
   },
 
   // ═══ 视频 — Seedance 2.0 Fast ═══
@@ -110,12 +114,14 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
     label: 'Seedance 2.0 Fast',
     tasks: ['text-video', 'image-video'],
     provider: 'newapi-video',
-    modelName: 'seedance-2.0-fast',
-    // seedance-2.0-fast-use-guide.md
-    ar: ['4:3', '16:9', '9:16', '1:1', '21:9', '3:4', '2:3', '3:2'],
+    modelName: 'seedance-2-0-fast',
+    // 文档: ratio 支持 auto/21:9/16:9/4:3/1:1/3:4/9:16
+    ar: ['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
     defAr: '16:9',
-    dur: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    // 文档: duration 4-15 秒整数
+    dur: [4, 15],
     defDur: 5,
+    // Fast 不支持 resolution（文档: "当前不要传 resolution"）
   },
 
   // ═══ 音乐 — Suno v5.5 ═══

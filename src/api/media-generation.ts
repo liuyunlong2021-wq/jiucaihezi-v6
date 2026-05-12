@@ -162,6 +162,39 @@ async function apiCall(path: string, body: any | null, method = 'POST'): Promise
   return res.json()
 }
 
+/**
+ * 上传图片到服务器，返回 URL
+ * 用于 Grok 等不支持 base64 的模型
+ */
+async function uploadImage(dataUrl: string): Promise<string> {
+  const blob = dataUrlToBlob(dataUrl)
+  const formData = new FormData()
+  formData.append('file', blob, 'reference.png')
+  formData.append('purpose', 'assistants')  // OpenAI files API 格式
+
+  const key = getApiKey()
+  if (!key) throw new Error('请先配置 API Key')
+
+  const res = await fetch(`${BASE_URL}/v1/files`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${key}` },
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`图片上传失败 (${res.status}): ${text.slice(0, 200)}`)
+  }
+
+  const data = await res.json()
+  // 尝试多种可能的 URL 字段
+  const url = data.url || data.file?.url || data.data?.url || data.download_url
+  if (!url) {
+    throw new Error('上传成功但未返回 URL: ' + JSON.stringify(data).slice(0, 200))
+  }
+  return url
+}
+
 async function apiCallMultipart(path: string, fields: Record<string, string | Blob>): Promise<any> {
   const key = getApiKey()
   if (!key) throw new Error('请先配置 API Key')
@@ -201,12 +234,30 @@ async function pollTask(
   intervalMs = 10000,
 ): Promise<string> {
   const maxPolls = Math.ceil(maxPollsSec / (intervalMs / 1000))
+  let consecutive521 = 0
   for (let i = 0; i < maxPolls; i++) {
     await new Promise(r => setTimeout(r, intervalMs))
-    const data = await apiCall(pollPath, null, 'GET')
+    let data: any
+    try {
+      data = await apiCall(pollPath, null, 'GET')
+      consecutive521 = 0  // 成功请求，重置 521 计数
+    } catch (e: any) {
+      // Seedance 文档: 遇到 521 不要立即判失败，继续轮询 3 分钟
+      if (e.message?.includes('521')) {
+        consecutive521++
+        const elapsed = (i + 1) * (intervalMs / 1000)
+        onProgress?.(elapsed, '连接恢复中...')
+        if (consecutive521 * intervalMs < 180000) continue  // 3 分钟内继续
+      }
+      // 其他临时网络错误也重试
+      if (i < maxPolls - 1) continue
+      throw e
+    }
     const status = extractStatus(data)
     const elapsed = (i + 1) * (intervalMs / 1000)
-    onProgress?.(elapsed, status || 'PROCESSING')
+    // Seedance 进度信息
+    const progressMsg = data?.progress?.message || status || 'PROCESSING'
+    onProgress?.(elapsed, progressMsg)
     if (/^(completed|complete|success|succeeded|done)$/i.test(status)) {
       const url = extractMediaUrl(data, kind)
       if (url) return url
@@ -224,11 +275,16 @@ async function pollTask(
 // ======================================================================
 
 /**
- * 生成图片 — gpt-image-2
- * 
- * 文生图: POST /v1/images/generations (JSON)
- * 图生图: POST /v1/images/edits (multipart) — 日志验证: userId=5630, 200 OK, 60s
- *         JSON body 带 base64 会被 Cloudflare 524 超时，必须用 multipart
+ * 生成图片 — gpt-image-2 / grok-image
+ *
+ * gpt-image-2:
+ *   文生图: POST /v1/images/generations (JSON)
+ *   图生图: POST /v1/images/edits (multipart) — 日志验证: userId=5630, 200 OK, 60s
+ *           JSON body 带 base64 会被 Cloudflare 524 超时，必须用 multipart
+ *
+ * grok-image (文档: T8grok.md 行12-97):
+ *   文生图/图生图: POST /v1/images/generations (JSON)
+ *   参数: aspect_ratio (下划线), image (数组)
  */
 export async function generateImage(
   params: ImageGenParams,
@@ -237,7 +293,20 @@ export async function generateImage(
   const { model, prompt, image, aspectRatio, resolution } = params
   const size = params.size || mapGptImageSize(aspectRatio || '1:1', resolution)
 
-  // ── 图生图 → multipart /v1/images/edits ──
+  // ── Grok Image → JSON /v1/images/generations (文档行72: aspect_ratio, 行73: image数组) ──
+  if (model.startsWith('grok') && model.includes('image')) {
+    const body: any = { model, prompt, response_format: 'url' }
+    if (aspectRatio) body.aspect_ratio = aspectRatio
+    if (image) body.image = [image]  // 数组格式（文档行73-76）
+
+    onProgress?.(0, image ? '上传图片中...' : '提交中')
+    const data = await apiCall('/v1/images/generations', body)
+    const mediaUrl = extractMediaUrl(data, 'image')
+    if (!mediaUrl) throw new Error('Grok 图片生成失败（响应: ' + JSON.stringify(data).slice(0, 200) + '）')
+    return { url: mediaUrl, type: 'image' }
+  }
+
+  // ── GPT Image 图生图 → multipart /v1/images/edits ──
   if (image) {
     onProgress?.(0, '上传图片中...')
     const fields: Record<string, string | Blob> = {
@@ -257,7 +326,7 @@ export async function generateImage(
     return { url: mediaUrl, type: 'image' }
   }
 
-  // ── 文生图 → JSON /v1/images/generations ──
+  // ── GPT Image 文生图 → JSON /v1/images/generations ──
   const body: any = { model, prompt, n: 1, size, response_format: 'url' }
   onProgress?.(0, '提交中')
   const data = await apiCall('/v1/images/generations', body)
@@ -269,7 +338,8 @@ export async function generateImage(
 /**
  * 生成视频 — grok-video-3 / veo3.1 / seedance
  *
- * grok/veo → POST /v1/video/generations → GET /v1/video/generations/:id
+ * grok → POST /v2/videos/generations → GET /v2/videos/generations/:id (文档验证)
+ * veo → POST /v1/video/generations → GET /v1/video/generations/:id
  * seedance → POST /v1/videos → GET /v1/videos/:id
  */
 export async function generateVideo(
@@ -278,11 +348,32 @@ export async function generateVideo(
 ): Promise<MediaResult> {
   const { model, prompt, aspectRatio, resolution, duration, imageUrl } = params
 
-  // ── Seedance 系列 → /v1/videos ──
+  // ── Seedance 系列 → /v1/videos (文档: seedance-2-0-fast-use-guide.md) ──
   if (model.startsWith('seedance')) {
-    const body: any = { model, prompt, duration: Number(duration) || 5, ratio: aspectRatio || '16:9' }
-    if (imageUrl) { body.reference_mode = 'omni_reference'; body.image_file_1 = imageUrl }
+    const body: any = {
+      model,
+      prompt,
+      duration: Number(duration) || 5,
+      ratio: aspectRatio || '16:9',
+      generate_audio: true,
+    }
+    // Pro 模型支持 resolution（文档: 480p/720p/1080p）
+    // Fast 模型不传 resolution（文档: "当前不要传 resolution"）
+    if (model.includes('pro') && resolution) {
+      body.resolution = resolution.toLowerCase()
+    }
+    // 图生视频：reference_mode + image_file_1
+    if (imageUrl) {
+      body.reference_mode = 'omni_reference'
+      if (imageUrl.startsWith('data:')) {
+        // Seedance 支持 base64，也支持 URL，直接传 base64
+        body.image_file_1 = imageUrl
+      } else {
+        body.image_file_1 = imageUrl
+      }
+    }
 
+    onProgress?.(0, imageUrl ? '上传素材中...' : '提交任务...')
     const data = await apiCall('/v1/videos', body)
     let mediaUrl = extractMediaUrl(data, 'video')
     if (!mediaUrl) {
@@ -293,7 +384,36 @@ export async function generateVideo(
     return { url: mediaUrl, type: 'video' }
   }
 
-  // ── Grok / Veo / 其他 → /v1/video/generations ──
+  // ── Grok 系列 → /v2/videos/generations (文档: T8grok.md 行119-236) ──
+  if (model.startsWith('grok-video')) {
+    const body: any = { model, prompt }
+    if (aspectRatio) body.ratio = aspectRatio
+    if (resolution) body.resolution = resolution.toUpperCase()  // 720P / 1080P
+    if (duration) body.duration = Number(duration)
+
+    // ★ 关键：images 参数需要 URL，不能是 base64（会导致 HTTP2 协议错误）
+    if (imageUrl) {
+      if (imageUrl.startsWith('data:')) {
+        onProgress?.(0, '上传参考图...')
+        const uploadedUrl = await uploadImage(imageUrl)
+        body.images = [uploadedUrl]
+      } else {
+        body.images = [imageUrl]
+      }
+    }
+
+    onProgress?.(0, '提交任务...')
+    const data = await apiCall('/v2/videos/generations', body)
+    const taskId = extractTaskId(data)
+    if (!taskId) throw new Error('Grok 未返回任务 ID')
+
+    // 轮询 /v2/videos/generations/:id (文档行256-296)
+    const mediaUrl = await pollTask(`/v2/videos/generations/${taskId}`, 'video', onProgress, 3000, 15000)
+    if (!mediaUrl) throw new Error('Grok 视频生成失败')
+    return { url: mediaUrl, type: 'video' }
+  }
+
+  // ── Veo / 其他 → /v1/video/generations ──
   const body: any = { model, prompt }
   if (aspectRatio) body.ratio = aspectRatio
   if (resolution) body.resolution = resolution.toUpperCase()

@@ -20,6 +20,7 @@ import {
 export interface CreationResult {
   url: string
   type: 'image' | 'video' | 'audio' | 'unknown'
+  content?: string
   model: string
   task: string
   ts: number
