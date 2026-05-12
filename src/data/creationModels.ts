@@ -46,6 +46,8 @@ export interface CreationModel {
   /** 视频 duration 选项 */
   dur?: number[]
   defDur?: number
+  /** 最大参考图数量（默认 1） */
+  maxFiles?: number
   /** Suno mv 版本 */
   sunoMv?: string
 }
@@ -64,19 +66,34 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
     defSize: 'auto',
   },
 
-  // ═══ 视频 — Grok ═══
+  // ═══ 视频 — Grok Video HD (渠道18: 720P/1080P, 10-15秒, ¥0.2/秒) ═══
   'grok-video-3': {
-    label: 'Grok Video 3',
+    label: 'Grok Video HD',
     tasks: ['text-video', 'image-video'],
     provider: 'newapi-video',
     modelName: 'grok-video-3',
-    // T8grok.md: ratio, resolution, duration
-    ar: ['2:3', '3:2', '1:1', '16:9', '9:16'],
+    ar: ['1:1', '2:3', '3:2', '16:9', '9:16'],
     defAr: '16:9',
     res: ['720P', '1080P'],
     defRes: '720P',
-    dur: [6, 10],
-    defDur: 6,
+    dur: [10, 15],
+    defDur: 10,
+    maxFiles: 7,  // 最多7张参考图
+  },
+
+  // ═══ 视频 — Grok Video Flex (渠道36: 720P, 6-30秒, ¥0.3/秒) ═══
+  'grok-video-3-fast': {
+    label: 'Grok Video Flex',
+    tasks: ['text-video', 'image-video'],
+    provider: 'newapi-video',
+    modelName: 'grok-video-3-fast',
+    ar: ['1:1', '2:3', '3:2', '16:9', '9:16'],
+    defAr: '16:9',
+    res: ['720P'],
+    defRes: '720P',
+    dur: [6, 30],
+    defDur: 10,
+    maxFiles: 7,  // 最多7张参考图
   },
 
   // ═══ 视频 — Veo ═══

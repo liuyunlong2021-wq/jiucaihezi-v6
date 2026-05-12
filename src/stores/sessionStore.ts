@@ -23,7 +23,8 @@ export interface Session {
 
 export const useSessionStore = defineStore('sessions', () => {
   const sessions = ref<Session[]>([])
-  const activeSessionId = ref<string>('')
+  // 从 localStorage 恢复上次的 activeSessionId
+  const activeSessionId = ref<string>(localStorage.getItem('jc_active_session') || '')
 
   // ─── createConversationSessionId — 行 4859-4861 ───
   function createSessionId(): string {
@@ -125,12 +126,14 @@ export const useSessionStore = defineStore('sessions', () => {
   function startNewSession(agentId: string): string {
     const id = createSessionId()
     activeSessionId.value = id
+    localStorage.setItem('jc_active_session', id)
     return id
   }
 
   // ─── 切换对话 ───
   function switchSession(sessionId: string) {
     activeSessionId.value = sessionId
+    localStorage.setItem('jc_active_session', sessionId)
   }
 
   // ─── 删除对话 ───
@@ -140,6 +143,7 @@ export const useSessionStore = defineStore('sessions', () => {
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
     if (activeSessionId.value === sessionId) {
       activeSessionId.value = ''
+      localStorage.removeItem('jc_active_session')
     }
   }
 

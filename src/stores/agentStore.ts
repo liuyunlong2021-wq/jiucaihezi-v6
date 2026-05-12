@@ -45,6 +45,7 @@ export const PILL_MODELS = [
 const SKILL_PRESETS: SkillConfig[] = [
   {
     id: 'guide', name: '新手指导',
+    oneLineDesc: '韭菜盒子使用向导，有问必答',
     description: '当用户初次使用韭菜盒子，或对功能有疑问时自动激活。引导新用户快速上手所有功能。',
     triggers: ['怎么用', '帮助', '教程', '不会', '新手'],
     skillContent: `## 角色定义\n你是「新手指导」— 韭菜盒子 AI 工作站的专属向导搭子。\n\n## 工作流程\n1. 识别用户的困惑点\n2. 用最简单直白的语言解释功能\n3. 给出具体操作步骤\n4. 确认用户是否理解\n\n## 输出格式\n- 用数字编号列出步骤\n- 每步不超过一句话\n- 关键按钮用【】标注`,
@@ -53,6 +54,7 @@ const SKILL_PRESETS: SkillConfig[] = [
   },
   {
     id: 'manhua', name: '漫剧剧本',
+    oneLineDesc: '把你的故事变成漫画分镜剧本',
     description: '当用户想创作漫剧、短剧、分镜剧本时自动激活。从灵感碎片生成完整剧本。',
     triggers: ['漫剧', '剧本', '分镜', '短剧', '故事'],
     skillContent: `## 角色定义\n你是「漫剧剧本」创作搭子，擅长将灵感碎片转化为结构化的漫剧剧本。\n\n## 工作流程\n1. 收集用户灵感\n2. 提炼核心冲突和情感线\n3. 生成分镜大纲\n4. 迭代优化\n\n## 输出格式\n- 标题行\n- 每个分镜编号 + 画面 + 台词 + 镜头\n- 情绪标注`,
@@ -61,6 +63,7 @@ const SKILL_PRESETS: SkillConfig[] = [
   },
   {
     id: 'ppt_designer', name: 'PPT 设计师',
+    oneLineDesc: '帮你设计专业的演示文稿内容',
     description: '当用户需要制作PPT、设计演示文稿内容和素材时自动激活。',
     triggers: ['PPT', 'ppt', '演示', '幻灯片', '汇报'],
     skillContent: `## 角色定义\n你是「PPT 设计师」，负责PPT内容设计和素材设计。\n\n## 工作流程\n1. 了解主题和用途\n2. 设计内容大纲\n3. 建议配色和版式\n4. 逐页输出内容\n\n## 输出格式\n- 每页标题 + 3-5个要点\n- 配图建议\n- 演讲备注`,
@@ -69,6 +72,7 @@ const SKILL_PRESETS: SkillConfig[] = [
   },
   {
     id: 'write_000', name: '写作',
+    oneLineDesc: '文章、小说、文案等文字创作',
     description: '当用户需要写文章、小说、文案等文字创作时自动激活。',
     triggers: ['写作', '文章', '小说', '文案', '写'],
     skillContent: `## 角色定义\n你是「写作总管」，小说与文字创作流水线的总调度。\n\n## 工作流程\n1. 了解写作类型和目标读者\n2. 确定风格、调性、篇幅\n3. 生成大纲或直接创作\n4. 迭代修改`,
@@ -80,6 +84,7 @@ const SKILL_PRESETS: SkillConfig[] = [
 
   {
     id: 'film-type-analysis', name: '影片风格分析师',
+    oneLineDesc: '分析剧本确定视觉风格和叙事节奏',
     description: '分析剧本确定视觉风格、画面比例与叙事节奏',
     triggers: ['风格', '分析', '类型', '比例', '节奏'],
     skillContent: 'skill://skills/film-type-analysis/SKILL.md',
@@ -88,6 +93,7 @@ const SKILL_PRESETS: SkillConfig[] = [
   },
   {
     id: 'film-character-asset', name: '角色设定师',
+    oneLineDesc: '从剧本提取角色资产和制作手册',
     description: '从剧本提取角色资产控制表与制作手册',
     triggers: ['角色', '人设', '立绘', '角色表'],
     skillContent: 'skill://skills/film-character-asset/SKILL.md',
@@ -96,6 +102,7 @@ const SKILL_PRESETS: SkillConfig[] = [
   },
   {
     id: 'film-scene-asset', name: '场景设定师',
+    oneLineDesc: '设计可复用的空镜主场景资产',
     description: '设计可复用的空镜主场景资产规格',
     triggers: ['场景', '空镜', '环境', '背景'],
     skillContent: 'skill://skills/film-scene-asset/SKILL.md',
@@ -304,6 +311,7 @@ export const useAgentStore = defineStore('agents', () => {
         evolutionLog: [],
       }
       createAgent(skill)
+      moveToMy(skill.id)
       return skill
     }
 
@@ -324,6 +332,7 @@ export const useAgentStore = defineStore('agents', () => {
       evolutionLog: [],
     }
     createAgent(skill)
+    moveToMy(skill.id)
     return skill
   }
 
@@ -352,6 +361,7 @@ export const useAgentStore = defineStore('agents', () => {
           evolutionLog: [],
         }
         createAgent(skill)
+        moveToMy(skill.id)
         count++
       }
       return count
@@ -477,10 +487,113 @@ export const useAgentStore = defineStore('agents', () => {
     localStorage.setItem('jc_router_enabled', routerEnabled.value ? '1' : '0')
   }
 
+  // ─── 仓库整体开关 ───
+  const warehouseEnabled = ref(localStorage.getItem('jc_warehouse_enabled') !== '0')
+  const presetEnabled = ref(localStorage.getItem('jc_preset_enabled') !== '0')
+
+  function toggleWarehouse(enabled?: boolean) {
+    warehouseEnabled.value = enabled !== undefined ? enabled : !warehouseEnabled.value
+    localStorage.setItem('jc_warehouse_enabled', warehouseEnabled.value ? '1' : '0')
+  }
+
+  function togglePresetEnabled(enabled?: boolean) {
+    presetEnabled.value = enabled !== undefined ? enabled : !presetEnabled.value
+    localStorage.setItem('jc_preset_enabled', presetEnabled.value ? '1' : '0')
+  }
+
+  // ─── 我的搭子：用户主动添加的搭子列表 ───
+  function getMySkills(): SkillConfig[] {
+    const myIds: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
+    const all = loadSkills()
+    return myIds.map(id => all.find(s => s.id === id)).filter(Boolean) as SkillConfig[]
+  }
+
+  function saveMySkillIds(ids: string[]) {
+    localStorage.setItem('jc_my_skills', JSON.stringify(ids))
+  }
+
+  function moveToMy(id: string) {
+    const ids: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
+    if (!ids.includes(id)) {
+      ids.push(id)
+      saveMySkillIds(ids)
+    }
+  }
+
+  function moveToPreset(id: string) {
+    const ids: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
+    saveMySkillIds(ids.filter(i => i !== id))
+    if (currentAgent.value?.id === id) currentAgent.value = null
+  }
+
+  function isInMySkills(id: string): boolean {
+    const ids: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
+    return ids.includes(id)
+  }
+
+  // ─── 获取内置搭子（不在"我的搭子"中的预设） ───
+  function getPresetSkills(): SkillConfig[] {
+    const myIds: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
+    return SKILL_PRESETS.filter(p => !myIds.includes(p.id))
+  }
+
+  // ─── 启用/禁用仓库搭子（保留向后兼容） ───
+  function enableWarehouseSkill(id: string) { moveToMy(id) }
+  function disableWarehouseSkill(id: string) { moveToPreset(id) }
+  function isWarehouseSkillEnabled(id: string): boolean { return isInMySkills(id) }
+
+  // ─── 调用计数 ───
+  function incrementCallCount(id: string) {
+    const counts: Record<string, number> = JSON.parse(localStorage.getItem('jc_call_counts') || '{}')
+    counts[id] = (counts[id] || 0) + 1
+    localStorage.setItem('jc_call_counts', JSON.stringify(counts))
+  }
+
+  function getCallCount(id: string): number {
+    const counts: Record<string, number> = JSON.parse(localStorage.getItem('jc_call_counts') || '{}')
+    return counts[id] || 0
+  }
+
+  // ─── 获取可被自动搭子路由的搭子 ───
+  function getRoutableSkills(): SkillConfig[] {
+    if (!routerEnabled.value) return []
+    const result: SkillConfig[] = [...getMySkills()]
+    if (presetEnabled.value) {
+      result.push(...getPresetSkills())
+    }
+    // 始终包含 superpower 搭子
+    result.push(...SUPERPOWER_SKILLS)
+    return result
+  }
+
+  // ─── 获取第二列显示的搭子（向后兼容，现在等同 getMySkills） ───
+  function getUserSkills(): SkillConfig[] {
+    return getMySkills()
+  }
+
+  // ─── 排序 ───
+  type SortMode = 'name' | 'callCount'
+  const sortMode = ref<SortMode>((localStorage.getItem('jc_sort_mode') as SortMode) || 'callCount')
+
+  function setSortMode(mode: SortMode) {
+    sortMode.value = mode
+    localStorage.setItem('jc_sort_mode', mode)
+  }
+
+  function sortSkills(skills: SkillConfig[]): SkillConfig[] {
+    if (sortMode.value === 'name') {
+      return [...skills].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+    }
+    return [...skills].sort((a, b) => getCallCount(b.id) - getCallCount(a.id))
+  }
+
   return {
     currentAgent,
     currentModel,
     routerEnabled,
+    warehouseEnabled,
+    presetEnabled,
+    sortMode,
     migrationCount,
     agents,
     modelLabel,
@@ -497,6 +610,22 @@ export const useAgentStore = defineStore('agents', () => {
     updateSkill,
     deleteAgent,
     toggleRouter,
+    toggleWarehouse,
+    togglePresetEnabled,
+    enableWarehouseSkill,
+    disableWarehouseSkill,
+    isWarehouseSkillEnabled,
+    getMySkills,
+    getPresetSkills,
+    moveToMy,
+    moveToPreset,
+    isInMySkills,
+    incrementCallCount,
+    getCallCount,
+    getRoutableSkills,
+    getUserSkills,
+    sortSkills,
+    setSortMode,
     importFromText,
     importFromJSON,
     PRESETS: SKILL_PRESETS.concat(SUPERPOWER_SKILLS),

@@ -84,9 +84,18 @@ async function _executeCreation(snap: {
     } else if (mediaType === 'video') {
       // 智能检测：有文件就自动当图生视频
       const hasRefImage = snap.files.length > 0
-      const imageUrl = hasRefImage
-        ? await fileToDataUrl(snap.files[0])
-        : undefined
+      
+      // 支持多图
+      let imageUrl: string | undefined
+      let imageUrls: string[] | undefined
+      
+      if (hasRefImage) {
+        if (snap.files.length === 1) {
+          imageUrl = await fileToDataUrl(snap.files[0])
+        } else {
+          imageUrls = await Promise.all(snap.files.map(f => fileToDataUrl(f)))
+        }
+      }
 
       const result = await generateVideo({
         model: modelDef.modelName,
@@ -95,6 +104,7 @@ async function _executeCreation(snap: {
         resolution: snap.res,
         duration: snap.dur,
         imageUrl,
+        imageUrls,
       }, onProgress)
 
       addResult({ url: result.url, type: 'video', model: modelDef.label, task: hasRefImage ? 'image-video' : 'text-video', ts: Date.now() })

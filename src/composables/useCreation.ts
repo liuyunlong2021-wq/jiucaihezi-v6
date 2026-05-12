@@ -160,7 +160,12 @@ export function setDuration(dur: number) { cpState.dur = dur; saveCpState() }
 
 // ─── 文件处理 ───
 export function addFiles(fileList: FileList | File[]) {
-  Array.from(fileList).forEach(f => cpState.files.push(f))
+  const max = currentModel.value?.maxFiles || 1
+  Array.from(fileList).forEach(f => {
+    if (cpState.files.length < max) {
+      cpState.files.push(f)
+    }
+  })
 }
 export function removeFile(index: number) { cpState.files.splice(index, 1) }
 export function clearFiles() { cpState.files.splice(0) }

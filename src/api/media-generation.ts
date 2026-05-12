@@ -29,7 +29,8 @@ export interface VideoGenParams {
   aspectRatio?: string
   resolution?: string
   duration?: string | number
-  imageUrl?: string
+  imageUrl?: string       // 单图（Seedance 等）
+  imageUrls?: string[]    // 多图（Grok 最多7张，prompt 中用 @img1 @img2...）
 }
 
 export interface MediaResult {
@@ -391,14 +392,29 @@ export async function generateVideo(
     if (resolution) body.resolution = resolution.toUpperCase()  // 720P / 1080P
     if (duration) body.duration = Number(duration)
 
+    const { imageUrls, imageUrl: singleImageUrl } = params
+    
     // ★ 关键：images 参数需要 URL，不能是 base64（会导致 HTTP2 协议错误）
-    if (imageUrl) {
-      if (imageUrl.startsWith('data:')) {
+    if (imageUrls && imageUrls.length > 0) {
+      onProgress?.(0, `上传参考图 (0/${imageUrls.length})...`)
+      const uploaded: string[] = []
+      for (let i = 0; i < imageUrls.length; i++) {
+        const url = imageUrls[i]
+        if (url.startsWith('data:')) {
+          onProgress?.(0, `上传参考图 (${i+1}/${imageUrls.length})...`)
+          uploaded.push(await uploadImage(url))
+        } else {
+          uploaded.push(url)
+        }
+      }
+      body.images = uploaded
+    } else if (singleImageUrl) {
+      // 单图兼容
+      if (singleImageUrl.startsWith('data:')) {
         onProgress?.(0, '上传参考图...')
-        const uploadedUrl = await uploadImage(imageUrl)
-        body.images = [uploadedUrl]
+        body.images = [await uploadImage(singleImageUrl)]
       } else {
-        body.images = [imageUrl]
+        body.images = [singleImageUrl]
       }
     }
 

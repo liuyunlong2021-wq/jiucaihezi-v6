@@ -85,6 +85,50 @@ const filteredCustom = computed(() => {
     .filter(a => !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q))
 })
 
+// 新仓库面板：我的搭子 + 内置搭子（带搜索过滤和排序）
+// 用 tick 触发响应式更新（localStorage 不是响应式的）
+const warehouseTick = ref(0)
+function refreshWarehouse() { warehouseTick.value++ }
+
+const sortedMySkills = computed(() => {
+  void warehouseTick.value
+  const q = agentFilter.value.toLowerCase()
+  let skills = agentStore.getMySkills()
+  if (q) skills = skills.filter(a => a.name.toLowerCase().includes(q) || (a.oneLineDesc || a.description || '').toLowerCase().includes(q) || (a.triggers || []).some(t => t.toLowerCase().includes(q)))
+  return agentStore.sortSkills(skills)
+})
+
+const sortedPresetSkills = computed(() => {
+  void warehouseTick.value
+  const q = agentFilter.value.toLowerCase()
+  let skills = agentStore.getPresetSkills()
+  if (q) skills = skills.filter(a => a.name.toLowerCase().includes(q) || (a.oneLineDesc || a.description || '').toLowerCase().includes(q) || (a.triggers || []).some(t => t.toLowerCase().includes(q)))
+  return agentStore.sortSkills(skills)
+})
+
+// 卡片三点菜单
+const cardMenu = ref({ show: false, x: 0, y: 0, skill: null as SkillConfig | null, zone: '' as 'my' | 'preset' | '' })
+
+function openCardMenu(e: MouseEvent, skill: SkillConfig, zone: 'my' | 'preset') {
+  e.stopPropagation()
+  cardMenu.value = { show: true, x: e.clientX, y: e.clientY, skill, zone }
+}
+
+function editCardField(field: 'name' | 'triggers' | 'oneLineDesc') {
+  const skill = cardMenu.value.skill
+  cardMenu.value.show = false
+  if (!skill) return
+  const labels: Record<string, string> = { name: '搭子名', triggers: '命中关键词（逗号分隔）', oneLineDesc: '一句话介绍' }
+  const current = field === 'triggers' ? (skill.triggers || []).join(', ') : (skill[field] || '')
+  const newVal = prompt(labels[field], current)
+  if (newVal === null) return
+  if (field === 'triggers') {
+    agentStore.updateSkill(skill.id, { triggers: newVal.split(/[,，]/).map(s => s.trim()).filter(Boolean) })
+  } else {
+    agentStore.updateSkill(skill.id, { [field]: newVal.trim() })
+  }
+}
+
 function startChatWithAgent(agentId: string) {
   agentStore.selectAgent(agentId)
   if (agentStore.routerEnabled) agentStore.toggleRouter()
@@ -202,32 +246,96 @@ function onResizeEnd() {
         <!-- 创建搭子 → Col 5 -->
         <AgentWizard v-if="rightPanel === 'create'" @close="rightPanel = ''" />
 
-        <!-- 搭子仓库 — 内置搭子卡片平铺 -->
+        <!-- 搭子仓库 — 两区布局 -->
         <div v-else-if="rightPanel === 'agents'" class="ws-warehouse">
           <div class="ws-warehouse-head">
             <h3>搭子仓库</h3>
-          </div>
-          <!-- 搜索框 -->
-          <div class="ws-wh-search">
-            <span class="mso" style="font-size:16px;color:var(--ink3)">search</span>
-            <input v-model="agentFilter" type="text" placeholder="搜索搭子..." class="ws-wh-search-input" />
-          </div>
-          <!-- 卡片网格 -->
-          <div class="ws-wh-grid">
-            <div v-for="a in filteredPresets" :key="a.id" class="ws-wh-card"
-                 :class="{ active: agentStore.currentAgent?.id === a.id }"
-                 @contextmenu.prevent="openContextMenu($event, a)">
-              <div class="ws-wh-card-name">{{ a.name }}</div>
-              <div class="ws-wh-card-triggers" v-if="a.triggers.length">
-                <span v-for="t in a.triggers.slice(0, 3)" :key="t" class="ws-wh-tag">{{ t }}</span>
-              </div>
-              <div class="ws-wh-card-desc">{{ a.description.slice(0, 50) }}</div>
-              <button class="ws-wh-card-btn" @click="startChatWithAgent(a.id)">
-                <span class="mso" style="font-size:14px">chat</span> 启用
-              </button>
+            <div class="ws-wh-search-mini">
+              <span class="mso" style="font-size:14px;color:var(--ink3)">search</span>
+              <input v-model="agentFilter" type="text" placeholder="搜索..." class="ws-wh-search-input" />
             </div>
-            <div v-if="filteredPresets.length === 0" class="ws-wh-empty">没有匹配的搭子</div>
+            <button class="ws-wh-sort-btn" @click="agentStore.setSortMode(agentStore.sortMode === 'callCount' ? 'name' : 'callCount')">
+              <span class="mso" style="font-size:14px">sort</span>
+              <span>{{ agentStore.sortMode === 'callCount' ? '次数' : '名称' }}</span>
+            </button>
           </div>
+
+          <div class="ws-wh-scroll">
+            <!-- 我的搭子区 -->
+            <div class="ws-wh-section">
+              <div class="ws-wh-section-title">我的搭子</div>
+              <div class="ws-wh-list">
+                <div v-for="a in sortedMySkills" :key="a.id" class="ws-wh-card2"
+                     :class="{ active: agentStore.currentAgent?.id === a.id }"
+                     @click="startChatWithAgent(a.id)">
+                  <div class="ws-wh-card2-head">
+                    <span class="ws-wh-card2-name">{{ a.name }}</span>
+                    <span class="ws-wh-card2-count">{{ agentStore.getCallCount(a.id) || '' }}</span>
+                    <button class="ws-wh-card2-menu" @click.stop="openCardMenu($event, a, 'my')">
+                      <span class="mso">more_horiz</span>
+                    </button>
+                  </div>
+                  <div class="ws-wh-card2-desc">{{ a.oneLineDesc || a.description }}</div>
+                  <div class="ws-wh-card2-tags" v-if="a.triggers?.length">
+                    <span v-for="t in a.triggers.slice(0, 4)" :key="t" class="ws-wh-tag">{{ t }}</span>
+                  </div>
+                  <button class="ws-wh-card2-action move-out" @click.stop="agentStore.moveToPreset(a.id); refreshWarehouse()">
+                    <span class="mso" style="font-size:13px">arrow_downward</span> 放入内置搭子
+                  </button>
+                </div>
+                <div v-if="sortedMySkills.length === 0" class="ws-wh-empty2">从下方内置搭子中添加</div>
+              </div>
+            </div>
+
+            <!-- 内置搭子区 -->
+            <div class="ws-wh-section">
+              <div class="ws-wh-section-title">
+                <span>内置搭子</span>
+                <div class="ws-wh-preset-toggle" :class="{ on: agentStore.presetEnabled }" @click="agentStore.togglePresetEnabled()">
+                  <div class="ws-wh-preset-toggle-dot"></div>
+                </div>
+              </div>
+              <div class="ws-wh-preset-hint">{{ agentStore.presetEnabled ? '参与自动搭子路由' : '不参与自动路由' }}</div>
+              <div class="ws-wh-list">
+                <div v-for="a in sortedPresetSkills" :key="a.id" class="ws-wh-card2"
+                     :class="{ active: agentStore.currentAgent?.id === a.id }"
+                     @click="startChatWithAgent(a.id)">
+                  <div class="ws-wh-card2-head">
+                    <span class="ws-wh-card2-name">{{ a.name }}</span>
+                    <span class="ws-wh-card2-count">{{ agentStore.getCallCount(a.id) || '' }}</span>
+                    <button class="ws-wh-card2-menu" @click.stop="openCardMenu($event, a, 'preset')">
+                      <span class="mso">more_horiz</span>
+                    </button>
+                  </div>
+                  <div class="ws-wh-card2-desc">{{ a.oneLineDesc || a.description }}</div>
+                  <div class="ws-wh-card2-tags" v-if="a.triggers?.length">
+                    <span v-for="t in a.triggers.slice(0, 4)" :key="t" class="ws-wh-tag">{{ t }}</span>
+                  </div>
+                  <button class="ws-wh-card2-action add-my" @click.stop="agentStore.moveToMy(a.id); refreshWarehouse()">
+                    <span class="mso" style="font-size:13px">arrow_upward</span> 添加到我的搭子
+                  </button>
+                </div>
+                <div v-if="sortedPresetSkills.length === 0" class="ws-wh-empty2">所有搭子已添加到我的搭子</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 卡片三点菜单 -->
+          <Teleport to="body">
+            <div v-if="cardMenu.show" class="ws-card-menu-overlay" @click="cardMenu.show = false">
+              <div class="ws-card-menu" :style="{ top: cardMenu.y + 'px', left: cardMenu.x + 'px' }">
+                <button class="ws-card-menu-item" @click="editCardField('name')">
+                  <span class="mso">edit</span> 修改搭子名
+                </button>
+                <button class="ws-card-menu-item" @click="editCardField('triggers')">
+                  <span class="mso">label</span> 修改命中关键词
+                </button>
+                <button class="ws-card-menu-item" @click="editCardField('oneLineDesc')">
+                  <span class="mso">short_text</span> 修改一句话介绍
+                </button>
+              </div>
+            </div>
+          </Teleport>
         </div>
 
         <!-- 长脑子 -->
@@ -314,55 +422,106 @@ function onResizeEnd() {
 .ws-placeholder p { font-size: 14px; font-weight: 600; }
 .ws-hint { font-size: 12px !important; font-weight: 400 !important; color: var(--ink3); }
 
-/* ─── 搭子仓库 — 内置搭子卡片 ─── */
+/* ─── 搭子仓库 — 两区布局 ─── */
 .ws-warehouse { display: flex; flex-direction: column; height: 100%; }
 .ws-warehouse-head {
-  padding: 14px 16px; border-bottom: 1px solid var(--line);
-  display: flex; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px;
 }
-.ws-warehouse-head h3 { font-size: 15px; font-weight: 700; color: var(--ink1); margin: 0; }
-/* 搜索 */
-.ws-wh-search {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 12px; margin: 8px 12px 4px; border-radius: 8px;
-  border: 1px solid var(--line); background: var(--bg);
+.ws-warehouse-head h3 { font-size: 15px; font-weight: 700; color: var(--ink1); margin: 0; flex-shrink: 0; }
+.ws-wh-search-mini {
+  flex: 1; display: flex; align-items: center; gap: 4px;
+  padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg);
 }
 .ws-wh-search-input {
   flex: 1; border: none; background: none; outline: none;
-  font-size: 13px; color: var(--ink1); font-family: inherit;
+  font-size: 12px; color: var(--ink1); font-family: inherit;
 }
-/* 卡片网格 */
-.ws-wh-grid {
-  flex: 1; overflow-y: auto; padding: 8px 12px 20px;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 8px; align-content: start;
+.ws-wh-sort-btn {
+  display: flex; align-items: center; gap: 2px;
+  padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--paper); color: var(--ink2); cursor: pointer;
+  font-size: 11px; font-weight: 600; font-family: inherit; flex-shrink: 0;
 }
-.ws-wh-card {
-  padding: 12px 14px; border-radius: 12px;
-  border: 1.5px solid var(--line); background: var(--surface);
+.ws-wh-sort-btn:hover { border-color: var(--olive); color: var(--olive); }
+.ws-wh-scroll { flex: 1; overflow-y: auto; padding: 8px 12px 20px; }
+.ws-wh-section { margin-bottom: 20px; }
+.ws-wh-section-title {
+  font-size: 12px; font-weight: 700; color: var(--ink1);
+  letter-spacing: 0.04em; padding: 8px 0;
+  display: flex; align-items: center; gap: 8px;
+  border-bottom: 2px solid var(--line); margin-bottom: 10px;
+}
+.ws-wh-preset-toggle {
+  width: 32px; height: 18px; border-radius: 9px;
+  background: var(--line); cursor: pointer; position: relative;
+  transition: background .25s; margin-left: auto;
+}
+.ws-wh-preset-toggle.on { background: var(--olive); }
+.ws-wh-preset-toggle-dot {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; position: absolute; top: 2px; left: 2px;
+  transition: transform .25s;
+}
+.ws-wh-preset-toggle.on .ws-wh-preset-toggle-dot { transform: translateX(14px); }
+.ws-wh-preset-hint { font-size: 10px; color: var(--ink3); margin-bottom: 8px; }
+.ws-wh-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.ws-wh-card2 {
+  padding: 12px 14px; border-radius: 10px;
+  border: 2px solid rgba(0,0,0,.12); background: var(--paper);
   display: flex; flex-direction: column; gap: 4px;
-  transition: all .15s;
+  cursor: pointer; transition: all .15s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.04);
 }
-.ws-wh-card:hover { border-color: var(--olive); box-shadow: 0 2px 10px rgba(0,0,0,.05); }
-.ws-wh-card.active { border-color: var(--olive); background: rgba(107,142,35,.05); }
-.ws-wh-card-name { font-size: 14px; font-weight: 700; color: var(--ink1); }
-.ws-wh-card-triggers { display: flex; gap: 3px; flex-wrap: wrap; }
+.ws-wh-card2:hover { border-color: var(--olive); box-shadow: 0 4px 12px rgba(0,0,0,.08); transform: translateY(-1px); }
+.ws-wh-card2.active { border-color: var(--olive); background: rgba(107,142,35,.06); }
+.ws-wh-card2-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.ws-wh-card2-name { font-size: 14px; font-weight: 700; color: var(--ink1); flex: 1; }
+.ws-wh-card2-count {
+  font-size: 11px; color: var(--olive); font-weight: 700;
+  background: rgba(107,142,35,.1); padding: 1px 6px; border-radius: 4px;
+}
+.ws-wh-card2-menu {
+  width: 24px; height: 24px; border: none; border-radius: 4px;
+  background: transparent; color: var(--ink3); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.ws-wh-card2-menu:hover { background: var(--surface-alt); color: var(--ink1); }
+.ws-wh-card2-desc {
+  font-size: 12px; color: var(--ink2); line-height: 1.5; margin-bottom: 4px;
+}
+.ws-wh-card2-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
 .ws-wh-tag {
   font-size: 10px; padding: 1px 6px; border-radius: 4px;
   background: rgba(213,199,135,.12); color: var(--olive-dark); font-weight: 600;
 }
-.ws-wh-card-desc {
-  font-size: 11px; color: var(--ink3); line-height: 1.4;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.ws-wh-card2-action {
+  width: 100%; padding: 6px 0; border: 1px dashed var(--line); border-radius: 6px;
+  background: transparent; color: var(--ink3); font-size: 11px; font-weight: 600;
+  cursor: pointer; font-family: inherit; display: flex; align-items: center;
+  justify-content: center; gap: 4px; transition: all .12s;
 }
-.ws-wh-card-btn {
-  margin-top: 4px; padding: 6px 0; border: none; border-radius: 8px;
-  background: var(--olive); color: #fff; font-size: 12px; font-weight: 700;
-  cursor: pointer; display: flex; align-items: center; justify-content: center;
-  gap: 4px; font-family: inherit; transition: all .12s;
+.ws-wh-card2-action.add-my:hover { border-color: var(--olive); color: var(--olive); background: rgba(107,142,35,.04); }
+.ws-wh-card2-action.move-out:hover { border-color: #ff9800; color: #ff9800; background: rgba(255,152,0,.04); }
+.ws-wh-empty2 { text-align: center; padding: 20px; font-size: 12px; color: var(--ink3); }
+
+/* 卡片三点菜单 */
+.ws-card-menu-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.15); }
+.ws-card-menu {
+  position: fixed; min-width: 180px; padding: 8px;
+  background: var(--paper); border: 2px solid var(--line);
+  border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.2);
+  z-index: 10000;
 }
-.ws-wh-card-btn:hover { transform: scale(1.02); filter: brightness(1.05); }
-.ws-wh-empty { grid-column: 1 / -1; text-align: center; padding: 24px; font-size: 12px; color: var(--ink3); }
+.ws-card-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 10px 14px; border: none; border-radius: 8px;
+  background: transparent; color: var(--ink1); font-size: 13px;
+  cursor: pointer; font-family: inherit; text-align: left;
+  font-weight: 500;
+}
+.ws-card-menu-item:hover { background: var(--surface); }
+.ws-card-menu-item .mso { font-size: 18px; color: var(--olive); }
 
 /* ─── 右键菜单 ─── */
 .ws-ctx-overlay { position: fixed; inset: 0; z-index: 9999; }

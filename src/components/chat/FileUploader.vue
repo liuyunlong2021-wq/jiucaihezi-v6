@@ -1,28 +1,36 @@
 <script setup lang="ts">
 /**
  * FileUploader.vue — 文件上传器（点击 + 拖拽 + 粘贴）
- *
- * 移植自 V4 code.html:
- *   - handleFileSelect 行 10713
- *   - handleDrop/handleDragOver 行 10730+
- *   - handlePaste 行 10747
- *   - addAttachedFile / renderAttachedFiles
+ * 支持：图片（自动压缩）、文本/代码、PDF（文本提取）
  */
 import { ref, computed } from 'vue'
+import {
+  validateFile, isImageFile, isTextFile, isPdfFile,
+  compressImage, extractPdfText, readFileAsText,
+  truncateText, formatSize, TEXT_TRUNCATE_BYTES
+} from '@/utils/fileProcessor'
 
 export interface AttachedFile {
   file: File
-  preview?: string  // base64 预览（图片用）
-  textContent?: string  // 文本文件内容
+  preview?: string
+  textContent?: string
+  status: 'processing' | 'ready' | 'error'
+  error?: string
 }
 
 const attachedFiles = ref<AttachedFile[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 const isDragging = ref(false)
+const toastMsg = ref('')
+let toastTimer: ReturnType<typeof setTimeout> | null = null
 
-// 暴露给父组件
+const isProcessing = computed(() => attachedFiles.value.some(f => f.status === 'processing'))
+const hasFiles = computed(() => attachedFiles.value.length > 0)
+const readyFiles = computed(() => attachedFiles.value.filter(f => f.status === 'ready'))
+
 defineExpose({
-  attachedFiles,
+  attachedFiles: readyFiles,
+  isProcessing,
   clearAll,
   triggerFileInput,
   handleDragOver,
@@ -30,6 +38,12 @@ defineExpose({
   handleDrop,
   handlePaste,
 })
+
+function showToast(msg: string) {
+  toastMsg.value = msg
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => { toastMsg.value = '' }, 4000)
+}
 
 function triggerFileInput() {
   fileInput.value?.click()
@@ -41,7 +55,7 @@ function handleFileSelect(e: Event) {
   for (let i = 0; i < input.files.length; i++) {
     addFile(input.files[i])
   }
-  input.value = '' // reset
+  input.value = ''
 }
 
 function handleDragOver(e: DragEvent) {
@@ -86,36 +100,38 @@ async function addFile(file: File) {
   // 去重
   if (attachedFiles.value.some(f => f.file.name === file.name && f.file.size === file.size)) return
 
-  const entry: AttachedFile = { file }
-
-  // 图片预览
-  if (file.type.startsWith('image/')) {
-    entry.preview = await readAsDataURL(file)
-  }
-  // 文本文件读取内容
-  if (file.type.startsWith('text/') || /\.(txt|md|csv|json|xml|html|css|js|ts|py|java|c|cpp|go|rs|sh)$/i.test(file.name)) {
-    entry.textContent = await readAsText(file)
+  // 校验
+  const validation = validateFile(file)
+  if (!validation.ok) {
+    showToast(validation.error!)
+    return
   }
 
+  const entry: AttachedFile = { file, status: 'processing' }
   attachedFiles.value.push(entry)
-}
 
-function readAsDataURL(file: File): Promise<string> {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => resolve('')
-    reader.readAsDataURL(file)
-  })
-}
-
-function readAsText(file: File): Promise<string> {
-  return new Promise((resolve) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = () => resolve('')
-    reader.readAsText(file)
-  })
+  try {
+    if (isImageFile(file)) {
+      entry.preview = await compressImage(file)
+      entry.status = 'ready'
+    } else if (isPdfFile(file)) {
+      entry.textContent = await extractPdfText(file)
+      entry.status = 'ready'
+    } else if (isTextFile(file)) {
+      let text = await readFileAsText(file)
+      const { text: truncated, truncated: wasTruncated } = truncateText(text, TEXT_TRUNCATE_BYTES)
+      if (wasTruncated) {
+        showToast(`${file.name} 内容过大，已截取前 500KB`)
+        text = truncated
+      }
+      entry.textContent = text
+      entry.status = 'ready'
+    }
+  } catch (err: any) {
+    entry.status = 'error'
+    entry.error = err.message || '文件处理失败'
+    showToast(entry.error!)
+  }
 }
 
 function removeFile(index: number) {
@@ -126,28 +142,19 @@ function clearAll() {
   attachedFiles.value = []
 }
 
-function formatSize(bytes: number) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
-}
-
 function getIcon(name: string, type: string) {
   if (type.startsWith('image/')) return 'image'
-  if (type.startsWith('video/')) return 'movie'
-  if (type.startsWith('audio/')) return 'graphic_eq'
   if (/\.pdf$/i.test(name)) return 'picture_as_pdf'
   if (/\.(doc|docx)$/i.test(name)) return 'description'
   if (/\.(xls|xlsx|csv)$/i.test(name)) return 'table_chart'
-  if (/\.(ppt|pptx)$/i.test(name)) return 'slideshow'
+  if (/\.(py|js|ts|java|go|rs|c|cpp|rb|php|swift|kt)$/i.test(name)) return 'code'
+  if (/\.(json|yaml|yml|toml|xml|ini|conf)$/i.test(name)) return 'data_object'
+  if (/\.(md|txt|log)$/i.test(name)) return 'article'
   return 'attach_file'
 }
-
-const hasFiles = computed(() => attachedFiles.value.length > 0)
 </script>
 
 <template>
-  <!-- 隐藏的 input -->
   <input
     ref="fileInput"
     type="file"
@@ -156,13 +163,24 @@ const hasFiles = computed(() => attachedFiles.value.length > 0)
     @change="handleFileSelect"
   />
 
+  <!-- Toast 提示 -->
+  <Transition name="toast">
+    <div v-if="toastMsg" class="upload-toast">{{ toastMsg }}</div>
+  </Transition>
+
   <!-- 附件预览条 -->
   <div v-if="hasFiles" class="attach-bar">
-    <div v-for="(af, i) in attachedFiles" :key="i" class="attach-chip">
-      <img v-if="af.preview" :src="af.preview" class="attach-thumb" />
+    <div v-for="(af, i) in attachedFiles" :key="i" class="attach-chip" :class="{ 'is-error': af.status === 'error' }">
+      <!-- 处理中 spinner -->
+      <span v-if="af.status === 'processing'" class="attach-spinner"></span>
+      <!-- 图片缩略图 -->
+      <img v-else-if="af.preview" :src="af.preview" class="attach-thumb" />
+      <!-- 文件图标 -->
       <span v-else class="mso attach-icon">{{ getIcon(af.file.name, af.file.type) }}</span>
+
       <span class="attach-name">{{ af.file.name }}</span>
       <span class="attach-size">({{ formatSize(af.file.size) }})</span>
+      <span v-if="af.status === 'error'" class="attach-err" :title="af.error">!</span>
       <span class="mso attach-rm" @click="removeFile(i)">close</span>
     </div>
   </div>
@@ -179,7 +197,10 @@ const hasFiles = computed(() => attachedFiles.value.length > 0)
   padding: 4px 8px; border-radius: 6px;
   background: var(--paper); border: 1px solid var(--line);
   font-size: 12px; color: var(--ink2);
-  max-width: 220px;
+  max-width: 240px; transition: border-color 0.2s;
+}
+.attach-chip.is-error {
+  border-color: #e53935; background: rgba(229,57,53,0.05);
 }
 .attach-thumb {
   width: 24px; height: 24px; border-radius: 4px;
@@ -191,9 +212,32 @@ const hasFiles = computed(() => attachedFiles.value.length > 0)
   max-width: 120px; font-weight: 500;
 }
 .attach-size { color: var(--ink3); font-size: 11px; flex-shrink: 0; }
+.attach-err {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #e53935; color: #fff; font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; flex-shrink: 0; cursor: help;
+}
 .attach-rm {
   font-size: 14px; color: var(--ink3); cursor: pointer;
   margin-left: 2px; flex-shrink: 0;
 }
 .attach-rm:hover { color: #e53935; }
+
+.attach-spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--olive);
+  animation: spin 0.8s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.upload-toast {
+  position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+  background: rgba(30,30,30,0.92); color: #fff;
+  padding: 8px 18px; border-radius: 8px; font-size: 13px;
+  z-index: 9999; pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.toast-enter-active, .toast-leave-active { transition: opacity 0.3s, transform 0.3s; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(-8px); }
 </style>

@@ -93,6 +93,12 @@ export interface SkillConfig {
   createdAt: number
   updatedAt: number
   evolutionLog: EvolutionEntry[]
+
+  // ─── 用户可见信息 ───
+  oneLineDesc?: string   // 一句话功能介绍
+  enabled?: boolean      // 是否启用（参与牛马路由）
+  callCount?: number     // 调用次数
+  icon?: string          // 图标名
 }
 
 /* ─── 路由结果（superpowers skill dispatch） ─── */

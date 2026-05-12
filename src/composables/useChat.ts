@@ -23,6 +23,8 @@ export interface ChatMessage {
   toolCalls?: ToolCall[]       // AI 请求的工具调用
   toolCallId?: string          // tool result 对应的 call id
   toolName?: string            // tool result 对应的工具名
+  images?: string[]            // 图片附件（base64 data URLs）
+  files?: Array<{ name: string; content: string }>  // 文本文件附件
 }
 
 export interface ToolCall {
@@ -234,6 +236,8 @@ export function useChat() {
       systemPrompt?: string
       agentId?: string
       agentName?: string
+      images?: string[]  // 图片附件（base64 data URLs）
+      files?: Array<{ name: string; content: string }>  // 文本文件附件
     } = {}
   ) {
     if (!userText.trim() || isStreaming.value) return
@@ -262,13 +266,15 @@ export function useChat() {
       return
     }
 
-    // 2. 添加用户消息
+    // 2. 添加用户消息（包含附件）
     const userMsg: ChatMessage = {
       id: createMessageId('user'),
       role: 'user',
       content: userText.trim(),
       timestamp: Date.now(),
       agentId: options.agentId,
+      images: options.images,
+      files: options.files,
     }
     messages.value.push(userMsg)
 
@@ -456,7 +462,7 @@ export function useChat() {
   }
 
   /**
-   * 构建 API 消息列表（包含 tool results）
+   * 构建 API 消息列表（包含 tool results + Vision 附件）
    */
   function buildApiMessages(systemPrompt: string) {
     const apiMessages: Array<Record<string, unknown>> = [
@@ -478,6 +484,36 @@ export function useChat() {
           content: m.content || null,
           tool_calls: m.toolCalls,
         })
+      } else if (m.role === 'user' && (m.images?.length || m.files?.length)) {
+        // ★ Vision API 格式：content 为数组
+        const contentParts: Array<Record<string, unknown>> = []
+
+        // 文本部分
+        if (m.content) {
+          contentParts.push({ type: 'text', text: m.content })
+        }
+
+        // 图片部分
+        if (m.images) {
+          for (const img of m.images) {
+            contentParts.push({
+              type: 'image_url',
+              image_url: { url: img }
+            })
+          }
+        }
+
+        // 文本文件部分（作为文本追加）
+        if (m.files) {
+          for (const f of m.files) {
+            contentParts.push({
+              type: 'text',
+              text: `\n\n[文件: ${f.name}]\n${f.content}`
+            })
+          }
+        }
+
+        apiMessages.push({ role: 'user', content: contentParts })
       } else {
         apiMessages.push({ role: m.role, content: m.content })
       }

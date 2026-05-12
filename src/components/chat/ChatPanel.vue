@@ -112,21 +112,43 @@ function buildSystemPrompt(): string | undefined {
 
 // 发送消息 + superpowers 完整流程
 async function handleSend() {
-  if (!inputText.value.trim() || isStreaming.value) return
-  const text = inputText.value
+  const hasText = inputText.value.trim().length > 0
+  const hasAttachments = (fileUploader.value?.attachedFiles?.length || 0) > 0
+  const isFileProcessing = fileUploader.value?.isProcessing
+
+  if ((!hasText && !hasAttachments) || isStreaming.value || isFileProcessing) return
+
+  const text = inputText.value.trim() || (hasAttachments ? '请分析这些文件' : '')
   inputText.value = ''
+
+  // 收集附件
+  const attachedFiles = fileUploader.value?.attachedFiles || []
+  const images: string[] = []
+  const files: Array<{ name: string; content: string }> = []
+
+  for (const af of attachedFiles) {
+    if (af.preview) {
+      images.push(af.preview)
+    } else if (af.textContent) {
+      files.push({ name: af.file.name, content: af.textContent })
+    }
+  }
+
+  // 清空附件
+  fileUploader.value?.clearAll()
 
   // 1. Superpowers 路由：牛马开关 ON 时自动分析意图
   if (agentStore.routerEnabled) {
-    const result = await routeMessage(text, agentStore.agents)
-    if (result.strategy === 'single' && result.matched.length > 0) {
-      agentStore.selectAgent(result.matched[0].skillId)
-      if (!agentStore.currentAgent || agentStore.currentAgent.id !== result.matched[0].skillId) {
+    const routableSkills = agentStore.getRoutableSkills()
+    if (routableSkills.length > 0) {
+      const result = await routeMessage(text, routableSkills)
+      if (result.strategy === 'single' && result.matched.length > 0) {
         agentStore.selectAgent(result.matched[0].skillId)
+        agentStore.incrementCallCount(result.matched[0].skillId)
+      } else if (result.strategy === 'chain' && result.matched.length > 0) {
+        agentStore.selectAgent(result.matched[0].skillId)
+        agentStore.incrementCallCount(result.matched[0].skillId)
       }
-    } else if (result.strategy === 'chain' && result.matched.length > 0) {
-      // Chain 模式：激活第一个 skill
-      agentStore.selectAgent(result.matched[0].skillId)
     }
   }
 
@@ -135,11 +157,13 @@ async function handleSend() {
     currentSessionId = sessionStore.startNewSession(agentStore.currentAgent?.id || '')
   }
 
-  // 3. 发送消息（使用 superpowers 完整 prompt）
+  // 3. 发送消息（使用 superpowers 完整 prompt + 附件）
   await sendMessage(text, {
     systemPrompt: buildSystemPrompt(),
     agentId: agentStore.currentAgent?.id,
     agentName: agentStore.currentAgent?.name || agentStore.modelLabel,
+    images: images.length > 0 ? images : undefined,
+    files: files.length > 0 ? files : undefined,
   })
 
   // 4. Chain Invoke 检测：检查 AI 最新回复是否包含 [INVOKE:xxx]
@@ -372,6 +396,8 @@ function onDrop(e: DragEvent) {
         :index="i"
         :tool-calls="msg.toolCalls"
         :tool-name="msg.toolName"
+        :images="msg.images"
+        :files="msg.files"
         @retry="retryMessage"
         @delete="deleteMessage"
       />

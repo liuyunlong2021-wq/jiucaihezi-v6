@@ -22,6 +22,8 @@ const props = defineProps<{
   index: number
   toolCalls?: ToolCall[]
   toolName?: string
+  images?: string[]  // 图片附件
+  files?: Array<{ name: string; content: string }>  // 文本文件附件
 }>()
 
 const emit = defineEmits<{
@@ -29,7 +31,6 @@ const emit = defineEmits<{
   (e: 'delete', index: number): void
 }>()
 
-const showActions = ref(false)
 const copyLabel = ref('content_copy')
 
 // Markdown 渲染
@@ -102,11 +103,7 @@ function appendToEditor() {
 </script>
 
 <template>
-  <div
-    class="msg" :class="role"
-    @mouseenter="showActions = true"
-    @mouseleave="showActions = false"
-  >
+  <div class="msg" :class="role">
     <div class="msg-meta">
       <div class="msg-meta-avatar">
         <span class="mso" style="font-size: 14px;">
@@ -118,33 +115,50 @@ function appendToEditor() {
       </span>
     </div>
     <div class="msg-bubble">
+      <!-- 图片附件 -->
+      <div v-if="images && images.length" class="msg-images">
+        <img v-for="(img, i) in images" :key="i" :src="img" class="msg-image" />
+      </div>
+
+      <!-- 文件附件标签 -->
+      <div v-if="files && files.length" class="msg-files">
+        <div v-for="(f, i) in files" :key="i" class="msg-file-chip">
+          <span class="mso" style="font-size:14px">{{ f.name.endsWith('.pdf') ? 'picture_as_pdf' : 'description' }}</span>
+          <span class="msg-file-name">{{ f.name }}</span>
+        </div>
+      </div>
+
       <div class="msg-body" v-html="renderedHtml"></div>
 
       <!-- 工具调用卡片 -->
       <ToolCallCard v-if="toolCalls && toolCalls.length" :tool-calls="toolCalls" />
 
-      <!-- 导入/追加编辑区按钮 -->
-      <div v-if="showImportBtn" class="msg-import-group">
-        <button class="msg-import-btn" :class="{ copied: importLabel !== '导入编辑区' }" @click="importToEditor">
+      <!-- 导入/追加编辑区 + 操作按钮（显性一排） -->
+      <div v-if="role === 'assistant'" class="msg-action-row">
+        <button v-if="showImportBtn" class="msg-action-btn" :class="{ copied: importLabel !== '导入编辑区' }" @click="importToEditor">
           <span class="mso">{{ importLabel === '导入编辑区' ? 'content_paste_go' : 'check' }}</span> {{ importLabel }}
         </button>
-        <button class="msg-import-btn append" :class="{ copied: appendLabel !== '追加编辑区' }" @click="appendToEditor">
+        <button v-if="showImportBtn" class="msg-action-btn append" :class="{ copied: appendLabel !== '追加编辑区' }" @click="appendToEditor">
           <span class="mso">{{ appendLabel === '追加编辑区' ? 'playlist_add' : 'check' }}</span> {{ appendLabel }}
         </button>
+        <button class="msg-action-btn" @click="copyMessage" :title="copyLabel === 'check' ? '已复制' : '复制'">
+          <span class="mso">{{ copyLabel }}</span> {{ copyLabel === 'check' ? '已复制' : '复制' }}
+        </button>
+        <button class="msg-action-btn danger" @click="emit('delete', index)" title="删除">
+          <span class="mso">delete_outline</span> 删除
+        </button>
       </div>
-    </div>
-
-    <!-- 消息操作栏 -->
-    <div v-if="showActions" class="msg-actions">
-      <button class="msg-act-btn" @click="copyMessage" :title="copyLabel === 'check' ? '已复制' : '复制'">
-        <span class="mso">{{ copyLabel }}</span>
-      </button>
-      <button v-if="role === 'user'" class="msg-act-btn" @click="emit('retry', index)" title="重新发送">
-        <span class="mso">refresh</span>
-      </button>
-      <button class="msg-act-btn" @click="emit('delete', index)" title="删除">
-        <span class="mso">delete_outline</span>
-      </button>
+      <div v-else-if="role === 'user'" class="msg-action-row">
+        <button class="msg-action-btn" @click="copyMessage">
+          <span class="mso">{{ copyLabel }}</span> {{ copyLabel === 'check' ? '已复制' : '复制' }}
+        </button>
+        <button class="msg-action-btn" @click="emit('retry', index)" title="重新发送">
+          <span class="mso">refresh</span> 重发
+        </button>
+        <button class="msg-action-btn danger" @click="emit('delete', index)">
+          <span class="mso">delete_outline</span> 删除
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -207,36 +221,51 @@ function appendToEditor() {
 :deep(.msg-body a) { color: var(--olive); text-decoration: underline; }
 :deep(.msg-body hr) { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
 
-/* 导入按钮组 */
-.msg-import-group {
+/* 图片附件 */
+.msg-images {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;
+}
+.msg-image {
+  max-width: 240px; max-height: 240px;
+  border-radius: 8px; border: 1px solid var(--line);
+  object-fit: cover; cursor: pointer;
+  transition: transform .15s;
+}
+.msg-image:hover { transform: scale(1.02); }
+
+/* 文件附件标签 */
+.msg-files {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;
+}
+.msg-file-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 6px;
+  background: var(--surface); border: 1px solid var(--line);
+  font-size: 12px; color: var(--ink2);
+}
+.msg-file-chip .mso { color: var(--olive); }
+.msg-file-name {
+  max-width: 160px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 操作按钮行（显性） */
+.msg-action-row {
   display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
 }
-.msg-import-btn {
-  display: flex; align-items: center; gap: 4px;
-  padding: 5px 12px;
-  border: 1px dashed var(--olive); border-radius: 6px;
-  background: rgba(107,142,35,.04); color: var(--olive);
-  font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+.msg-action-btn {
+  display: flex; align-items: center; gap: 3px;
+  padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--ink2);
+  font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit;
   transition: all .12s;
 }
-.msg-import-btn:hover { background: var(--olive); color: #fff; border-style: solid; }
-.msg-import-btn.copied { background: #4a7; color: #fff; border-color: #4a7; border-style: solid; }
-.msg-import-btn.append { border-color: #2196f3; color: #2196f3; background: rgba(33,150,243,.04); }
-.msg-import-btn.append:hover { background: #2196f3; color: #fff; }
-.msg-import-btn.append.copied { background: #4a7; color: #fff; border-color: #4a7; }
-.msg-import-btn .mso { font-size: 16px; }
-
-/* 操作栏 */
-.msg-actions {
-  display: flex; gap: 2px; margin-top: 4px; padding-left: 36px;
-  animation: fade-in .15s ease;
-}
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-.msg-act-btn {
-  padding: 3px 6px; border: none; border-radius: 4px;
-  background: transparent; color: var(--ink3); cursor: pointer;
-  transition: all .1s;
-}
-.msg-act-btn:hover { background: var(--surface); color: var(--ink1); }
-.msg-act-btn .mso { font-size: 16px; }
+.msg-action-btn:hover { border-color: var(--olive); color: var(--olive); }
+.msg-action-btn.copied { background: #4a7; color: #fff; border-color: #4a7; }
+.msg-action-btn.append { border-color: #2196f3; color: #2196f3; }
+.msg-action-btn.append:hover { background: rgba(33,150,243,.06); }
+.msg-action-btn.append.copied { background: #4a7; color: #fff; border-color: #4a7; }
+.msg-action-btn.danger:hover { border-color: #e53935; color: #e53935; }
+.msg-action-btn .mso { font-size: 14px; }
 </style>

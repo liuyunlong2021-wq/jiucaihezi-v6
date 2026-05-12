@@ -13,6 +13,7 @@ import { useAgentStore } from '@/stores/agentStore'
 import { resolveApiConfig, buildHeaders } from '@/utils/api'
 import type { SkillConfig } from '@/types/skill'
 import { parseSkillMd } from '@/types/skill'
+import { isPdfFile, extractPdfText } from '@/utils/fileProcessor'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useAgentStore()
@@ -49,12 +50,21 @@ function handleFileUpload(e: Event) {
   if (!file) return
 
   uploadedFileName.value = file.name
-  const reader = new FileReader()
-  reader.onload = () => {
-    const text = reader.result as string
-    referenceText.value = text.slice(0, 8000) // 控制大小
+
+  if (isPdfFile(file)) {
+    extractPdfText(file, 20).then(text => {
+      referenceText.value = text.slice(0, 8000)
+    }).catch(() => {
+      referenceText.value = '[PDF 解析失败，请粘贴文本内容]'
+    })
+  } else {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const text = reader.result as string
+      referenceText.value = text.slice(0, 8000)
+    }
+    reader.readAsText(file)
   }
-  reader.readAsText(file)
 }
 
 // ─── Step 1 → Step 2: AI 生成追问 ───
@@ -177,6 +187,134 @@ async function importFromGitHub() {
   }
 }
 
+// ─── 批量导入（扫描文件/文件夹） ───
+const batchResults = ref<Array<{ name: string; content: string; type: string }>>([])
+const batchDragging = ref(false)
+const batchImporting = ref(false)
+
+function isSkillFile(name: string): boolean {
+  return /\.(md|txt|json)$/i.test(name)
+}
+
+function detectSkillContent(text: string, fileName: string): { name: string; content: string; type: string } | null {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length < 20) return null
+
+  // SKILL.md 格式（有 frontmatter）
+  if (trimmed.startsWith('---\n')) {
+    const parsed = parseSkillMd(trimmed)
+    return { name: parsed.name || fileName.replace(/\.\w+$/, ''), content: parsed.skillContent || trimmed, type: 'SKILL.md' }
+  }
+
+  // JSON 数组（旧版导出）
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(trimmed)
+      if (Array.isArray(arr) && arr.length > 0 && (arr[0].systemPrompt || arr[0].prompt || arr[0].skillContent)) {
+        return { name: `${fileName} (${arr.length}个)`, content: trimmed, type: 'JSON批量' }
+      }
+    } catch {}
+  }
+
+  // JSON 单个对象
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed)
+      if (obj.systemPrompt || obj.prompt || obj.skillContent || obj.name) {
+        return { name: obj.name || fileName.replace(/\.\w+$/, ''), content: obj.systemPrompt || obj.prompt || obj.skillContent || '', type: 'JSON' }
+      }
+    } catch {}
+  }
+
+  // 纯文本系统提示词（包含角色定义特征）
+  if (trimmed.length > 50 && (/你是|角色|##\s|工作流|输出格式/i.test(trimmed) || /^#\s/m.test(trimmed))) {
+    return { name: fileName.replace(/\.\w+$/, ''), content: trimmed, type: '提示词' }
+  }
+
+  return null
+}
+
+async function handleBatchFiles(files: FileList | File[]) {
+  batchResults.value = []
+  batchImporting.value = true
+  errorMsg.value = ''
+
+  const results: Array<{ name: string; content: string; type: string }> = []
+
+  for (const file of Array.from(files)) {
+    if (!isSkillFile(file.name)) continue
+    try {
+      const text = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(reader.result as string)
+        reader.onerror = () => reject(new Error('读取失败'))
+        reader.readAsText(file)
+      })
+      const detected = detectSkillContent(text, file.name)
+      if (detected) results.push(detected)
+    } catch {}
+  }
+
+  batchResults.value = results
+  batchImporting.value = false
+  if (results.length === 0) {
+    errorMsg.value = '未找到可识别的搭子文件'
+  }
+}
+
+function handleBatchSelect(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (input.files) handleBatchFiles(input.files)
+  input.value = ''
+}
+
+function handleBatchDrop(e: DragEvent) {
+  e.preventDefault()
+  batchDragging.value = false
+  const items = e.dataTransfer?.items
+  if (!items) return
+
+  const files: File[] = []
+  const readEntry = (entry: FileSystemEntry): Promise<void> => {
+    return new Promise(resolve => {
+      if (entry.isFile) {
+        (entry as FileSystemFileEntry).file(f => { files.push(f); resolve() })
+      } else if (entry.isDirectory) {
+        const reader = (entry as FileSystemDirectoryEntry).createReader()
+        reader.readEntries(async entries => {
+          for (const e of entries) await readEntry(e)
+          resolve()
+        })
+      } else { resolve() }
+    })
+  }
+
+  const entries: FileSystemEntry[] = []
+  for (let i = 0; i < items.length; i++) {
+    const entry = items[i].webkitGetAsEntry()
+    if (entry) entries.push(entry)
+  }
+
+  Promise.all(entries.map(readEntry)).then(() => handleBatchFiles(files))
+}
+
+function confirmBatchImport() {
+  let count = 0
+  for (const item of batchResults.value) {
+    if (item.type === 'JSON批量') {
+      count += store.importFromJSON(item.content)
+    } else {
+      store.importFromText(item.content, item.name)
+      count++
+    }
+  }
+  batchResults.value = []
+  errorMsg.value = ''
+  if (count > 0) {
+    emit('close')
+  }
+}
+
 // ─── 保存搭子 ───
 function saveSkill() {
   if (!skillName.value.trim()) { errorMsg.value = '请给搭子起个名字'; return }
@@ -196,6 +334,7 @@ function saveSkill() {
     evolutionLog: [],
   }
   store.createAgent(skill)
+  store.moveToMy(skill.id)
   store.selectAgent(skill.id)
   emit('close')
 }
@@ -235,6 +374,39 @@ function saveSkill() {
             <input v-model="githubUrl" class="wizard-input" placeholder="粘贴 GitHub 仓库 URL（含 SKILL.md）" />
             <button class="wizard-btn-sm" :disabled="isGenerating" @click="importFromGitHub">
               {{ isGenerating ? '导入中...' : '导入' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 批量导入区域 -->
+        <div class="wizard-batch-section">
+          <div class="wizard-divider"><span>批量导入旧搭子</span></div>
+          <div class="wizard-batch-drop"
+               :class="{ dragging: batchDragging }"
+               @dragover.prevent="batchDragging = true"
+               @dragleave.prevent="batchDragging = false"
+               @drop="handleBatchDrop">
+            <span class="mso" style="font-size:28px;color:var(--olive)">folder_open</span>
+            <span class="wizard-batch-text">拖拽文件夹或文件到这里</span>
+            <label class="wizard-batch-btn">
+              <span class="mso" style="font-size:14px">upload</span> 选择文件
+              <input type="file" multiple accept=".md,.txt,.json" @change="handleBatchSelect" hidden />
+            </label>
+            <span class="wizard-batch-hint">支持 SKILL.md、系统提示词、JSON 导出文件</span>
+          </div>
+
+          <!-- 扫描结果 -->
+          <div v-if="batchImporting" class="wizard-batch-loading">
+            <span class="wizard-batch-spinner"></span> 扫描中...
+          </div>
+          <div v-if="batchResults.length > 0" class="wizard-batch-results">
+            <div class="wizard-batch-count">找到 {{ batchResults.length }} 个搭子</div>
+            <div v-for="(r, i) in batchResults" :key="i" class="wizard-batch-item">
+              <span class="wizard-batch-item-name">{{ r.name }}</span>
+              <span class="wizard-batch-item-type">{{ r.type }}</span>
+            </div>
+            <button class="wizard-btn-primary" @click="confirmBatchImport" style="margin-top:12px;width:100%">
+              一键导入全部 ({{ batchResults.length }})
             </button>
           </div>
         </div>
@@ -442,4 +614,46 @@ function saveSkill() {
   padding: 10px 14px; border-radius: 8px;
   background: #fff0f0; color: #c00; font-size: 13px;
 }
+
+/* 批量导入 */
+.wizard-batch-section { margin-top: 16px; }
+.wizard-batch-drop {
+  margin-top: 12px; padding: 24px 16px;
+  border: 2px dashed var(--line); border-radius: 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  transition: all .2s; background: var(--bg);
+}
+.wizard-batch-drop.dragging { border-color: var(--olive); background: rgba(107,142,35,.06); }
+.wizard-batch-text { font-size: 13px; color: var(--ink2); font-weight: 600; }
+.wizard-batch-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 14px; border-radius: 6px;
+  border: 1px solid var(--olive); background: transparent;
+  color: var(--olive); font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.wizard-batch-btn:hover { background: var(--olive); color: #fff; }
+.wizard-batch-hint { font-size: 11px; color: var(--ink3); }
+.wizard-batch-loading {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px; font-size: 13px; color: var(--ink2);
+}
+.wizard-batch-spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--olive);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.wizard-batch-results {
+  margin-top: 12px; padding: 12px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--paper);
+}
+.wizard-batch-count { font-size: 13px; font-weight: 700; color: var(--olive); margin-bottom: 8px; }
+.wizard-batch-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 8px; border-radius: 6px; margin-bottom: 4px;
+  background: var(--surface);
+}
+.wizard-batch-item-name { font-size: 12px; font-weight: 600; color: var(--ink1); }
+.wizard-batch-item-type { font-size: 10px; color: var(--ink3); padding: 1px 6px; border-radius: 4px; background: var(--bg); }
 </style>
