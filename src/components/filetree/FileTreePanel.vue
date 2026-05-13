@@ -3,10 +3,10 @@
  * FileTreePanel — 文件面板（Col 2）
  * 5个tab：文本、图片、视频、知识库、搭子
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useFileStore, type FileEntry } from '@/composables/useFileStore'
 import { useAgentStore } from '@/stores/agentStore'
-import { emitEvent } from '@/utils/eventBus'
+import { emitEvent, onEvent } from '@/utils/eventBus'
 import { parseSkillMd } from '@/types/skill'
 
 const fileStore = useFileStore()
@@ -39,7 +39,22 @@ async function loadTab() {
   }
 }
 
-onMounted(loadTab)
+onMounted(() => {
+  loadTab()
+})
+
+// ─── 编辑状态同步 ───
+const activeEditingId = ref<string | null>(null)
+const offEditorChanged = onEvent('editor-file-changed', (payload: any) => {
+  activeEditingId.value = payload?.fileId || null
+})
+const offRefreshList = onEvent('refresh-file-list', () => {
+  loadTab()
+})
+onBeforeUnmount(() => {
+  offEditorChanged()
+  offRefreshList()
+})
 
 function switchTab(tab: Tab) {
   activeTab.value = tab
@@ -122,8 +137,78 @@ function referenceFile() {
 function openInEditor() {
   const f = contextMenu.value.file; closeContextMenu()
   if (!f) return
-  emitEvent('open-in-editor', { name: f.name, content: f.content })
+  emitEvent('open-in-editor', { name: f.name, content: f.content, fileId: f.id })
   emitEvent('switch-panel', 'editor')
+}
+
+// ─── 新建文本文档 ───
+async function createNewDoc() {
+  const name = prompt('文档名称', `新文档_${new Date().toLocaleTimeString('zh-CN')}`)
+  if (!name) return
+  const file = await fileStore.addText(name, '')
+  await loadTab()
+  // 自动在编辑区打开
+  emitEvent('open-in-editor', { name: file.name, content: '', fileId: file.id })
+  emitEvent('switch-panel', 'editor')
+}
+
+// ─── 右键菜单增强 ───
+function copyFileContent() {
+  const f = contextMenu.value.file; closeContextMenu()
+  if (f) navigator.clipboard.writeText(f.content).then(() => alert('已复制到剪贴板'))
+}
+
+function appendToEditor() {
+  const f = contextMenu.value.file; closeContextMenu()
+  if (f) {
+    emitEvent('import-to-editor', { content: f.content, agentName: f.name })
+    emitEvent('switch-panel', 'editor')
+  }
+}
+
+function sendToAgent() {
+  const f = contextMenu.value.file; closeContextMenu()
+  if (f) {
+    emitEvent('send-to-chat', { text: f.content })
+  }
+}
+
+function exportSingleFile() {
+  const f = contextMenu.value.file; closeContextMenu()
+  if (!f) return
+  const blob = new Blob([f.content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = f.name.replace(/[/\\:*?"<>|]/g, '_') + '.md'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ─── 底部快捷操作 ───
+async function pasteFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText()
+    if (!text.trim()) { alert('剪贴板为空'); return }
+    const name = `粘贴_${new Date().toLocaleTimeString('zh-CN')}`
+    const file = await fileStore.addText(name, text)
+    await loadTab()
+    emitEvent('open-in-editor', { name: file.name, content: text, fileId: file.id })
+    emitEvent('switch-panel', 'editor')
+  } catch { alert('无法读取剪贴板') }
+}
+
+async function exportAllTexts() {
+  const files = await fileStore.loadByCategory('text')
+  if (files.length === 0) { alert('没有文本文件'); return }
+  const combined = files.map(f => `# ${f.name}\n\n${f.content}`).join('\n\n---\n\n')
+  const blob = new Blob([combined], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `全部文本_${new Date().toLocaleDateString('zh-CN')}.md`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 async function deleteFile() {
   const f = contextMenu.value.file; closeContextMenu()
@@ -411,6 +496,9 @@ const displayFiles = computed(() => {
       <!-- 工具栏 -->
       <div class="fp-toolbar">
         <div class="fp-search"><span class="mso" style="font-size:14px">search</span><input v-model="searchQuery" placeholder="搜索..." /></div>
+        <button v-if="activeTab === 'text'" class="fp-tool-btn new-doc" @click="createNewDoc" title="新建文本">
+          <span class="mso">note_add</span>
+        </button>
         <button class="fp-tool-btn" :class="{ active: selectAll }" @click="toggleSelectAll" title="全选"><span class="mso">select_all</span></button>
         <button class="fp-tool-btn" :disabled="!selectAll || selectedIds.size === 0" @click="deleteSelected" title="删除所选"><span class="mso">delete</span></button>
         <button v-if="activeTab === 'text' || activeTab === 'image' || activeTab === 'video'" class="fp-tool-btn" :disabled="!selectAll || selectedIds.size < 2" @click="mergeSelected" title="合并所选"><span class="mso">create_new_folder</span></button>
@@ -477,16 +565,31 @@ const displayFiles = computed(() => {
           </div>
           <!-- 文件 -->
           <div v-for="f in displayFiles" :key="f.id" class="fp-item"
-               :class="{ selected: selectedIds.has(f.id) }"
+               :class="{ selected: selectedIds.has(f.id), editing: f.id === activeEditingId }"
                @click="selectAll ? toggleItem(f.id) : null"
+               @dblclick="!selectAll ? (() => { emitEvent('open-in-editor', { name: f.name, content: f.content, fileId: f.id }); emitEvent('switch-panel', 'editor') })() : null"
                @contextmenu="openContextMenu($event, f)">
             <input v-if="selectAll" type="checkbox" :checked="selectedIds.has(f.id)" @click.stop="toggleItem(f.id)" />
             <span class="mso" style="font-size:16px;color:var(--ink3)">description</span>
             <span class="fp-item-name">{{ f.name }}</span>
+            <span v-if="f.id === activeEditingId" class="fp-editing-dot" title="正在编辑中"></span>
             <span class="fp-item-meta">{{ new Date(f.updatedAt).toLocaleDateString('zh-CN') }}</span>
           </div>
           <div v-if="displayFiles.length === 0 && folders.length === 0" class="fp-empty">暂无文本文件</div>
         </template>
+      </div>
+
+      <!-- 底部快捷操作条（仅文本 Tab） -->
+      <div v-if="activeTab === 'text'" class="fp-quick-bar">
+        <button class="fp-quick-btn" @click="createNewDoc">
+          <span class="mso">add</span> 新建文档
+        </button>
+        <button class="fp-quick-btn" @click="pasteFromClipboard">
+          <span class="mso">content_paste</span> 粘贴创建
+        </button>
+        <button class="fp-quick-btn" @click="exportAllTexts">
+          <span class="mso">download</span> 导出全部
+        </button>
       </div>
     </template>
 
@@ -510,8 +613,12 @@ const displayFiles = computed(() => {
           <!-- 文本菜单 -->
           <template v-else>
             <button class="fp-ctx-item" @click="renameFile"><span class="mso">edit</span> 重命名</button>
-            <button class="fp-ctx-item" @click="referenceFile"><span class="mso">link</span> 引用</button>
             <button class="fp-ctx-item" @click="openInEditor"><span class="mso">edit_note</span> 在编辑区打开</button>
+            <button class="fp-ctx-item" @click="appendToEditor"><span class="mso">playlist_add</span> 追加到编辑区</button>
+            <button class="fp-ctx-item" @click="referenceFile"><span class="mso">link</span> 引用到聊天</button>
+            <button class="fp-ctx-item" @click="copyFileContent"><span class="mso">content_copy</span> 复制内容</button>
+            <button class="fp-ctx-item" @click="sendToAgent"><span class="mso">send</span> 发送给搭子</button>
+            <button class="fp-ctx-item" @click="exportSingleFile"><span class="mso">download</span> 导出 .md</button>
             <button class="fp-ctx-item danger" @click="deleteFile"><span class="mso">delete</span> 删除</button>
           </template>
         </div>
@@ -581,4 +688,37 @@ const displayFiles = computed(() => {
 /* 选中状态 */
 .fp-item.selected, .fp-media-item.selected { background: rgba(107,142,35,.08); border-radius: 6px; }
 .fp-media-item.selected .fp-media-thumb { border-color: var(--olive); }
+
+/* 正在编辑标记 */
+.fp-item.editing { background: rgba(107,142,35,.06); border-left: 2px solid var(--olive); }
+.fp-editing-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #4caf50; flex-shrink: 0;
+  box-shadow: 0 0 4px rgba(76,175,80,.5);
+  animation: dot-pulse 2s ease infinite;
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+
+/* 新建文档按钮 */
+.fp-tool-btn.new-doc { background: var(--olive); color: #fff; border-color: var(--olive); }
+.fp-tool-btn.new-doc:hover { background: var(--olive-dark); }
+
+/* 底部快捷操作条 */
+.fp-quick-bar {
+  display: flex; gap: 4px; padding: 8px 6px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-alt); flex-shrink: 0;
+}
+.fp-quick-btn {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 3px;
+  padding: 6px 4px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--ink2);
+  font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: all .12s;
+}
+.fp-quick-btn:hover { border-color: var(--olive); color: var(--olive); }
+.fp-quick-btn .mso { font-size: 14px; }
 </style>

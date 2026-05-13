@@ -18,13 +18,19 @@ import Image from '@tiptap/extension-image'
 import Placeholder from '@tiptap/extension-placeholder'
 import CharacterCount from '@tiptap/extension-character-count'
 import { useNotebook } from '@/composables/useNotebook'
-import { onEvent } from '@/utils/eventBus'
+import { onEvent, emitEvent } from '@/utils/eventBus'
 import { useChat } from '@/composables/useChat'
 import { useAgentStore } from '@/stores/agentStore'
+import { useFileStore } from '@/composables/useFileStore'
 
 const { docTitle, load, save, blocks, addAgentBlock, clearAll } = useNotebook()
 const { sendMessage, isStreaming } = useChat()
 const agentStore = useAgentStore()
+const fileStore = useFileStore()
+
+// ─── 文件绑定（编辑区当前打开的文件 ID） ───
+const currentFileId = ref<string | null>(null)
+let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
 
 // ─── Tiptap 编辑器 ───
 const editor = useEditor({
@@ -53,8 +59,15 @@ const editor = useEditor({
         title: docTitle.value,
         content: e.getJSON(),
         text: e.getText(),
+        fileId: currentFileId.value,
       }))
     } catch { /* noop */ }
+
+    // 自动保存到 IndexedDB（防抖 1.5 秒）
+    if (autoSaveTimer) clearTimeout(autoSaveTimer)
+    autoSaveTimer = setTimeout(() => {
+      saveToFile()
+    }, 1500)
   },
   onSelectionUpdate: () => {
     // 选中文本时显示 AI 工具条
@@ -123,6 +136,61 @@ const offImport = onEvent('import-to-editor', (payload: any) => {
 })
 onBeforeUnmount(() => { offImport() })
 
+// ─── 接收"在编辑区打开"事件 ───
+const offOpenInEditor = onEvent('open-in-editor', (payload: any) => {
+  if (editor.value && payload) {
+    // 记录文件 ID（如果有）
+    currentFileId.value = payload.fileId || null
+    docTitle.value = payload.name || '正文'
+    // 设置内容
+    const content = payload.content || ''
+    editor.value.commands.setContent(`<p>${content.replace(/\n/g, '<br>')}</p>`)
+    // 广播当前编辑文件 ID
+    emitEvent('editor-file-changed', { fileId: currentFileId.value })
+  }
+})
+onBeforeUnmount(() => { offOpenInEditor() })
+
+// ─── 自动保存到 IndexedDB ───
+async function saveToFile() {
+  if (!editor.value) return
+  const text = editor.value.getText()
+  const json = editor.value.getJSON()
+
+  if (currentFileId.value) {
+    // 更新已有文件
+    await fileStore.updateFile(currentFileId.value, {
+      content: text,
+      name: docTitle.value,
+      metadata: { tiptapJson: json },
+    })
+  } else if (text.trim().length > 10) {
+    // 新文档超过 10 字自动创建文件
+    const file = await fileStore.addText(
+      docTitle.value || `新文档_${new Date().toLocaleTimeString('zh-CN')}`,
+      text,
+    )
+    currentFileId.value = file.id
+    emitEvent('editor-file-changed', { fileId: file.id })
+    emitEvent('refresh-file-list', {})
+  }
+}
+
+// ─── Cmd+S 快捷键 ───
+function onKeydown(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    e.preventDefault()
+    saveToFile()
+  }
+}
+onMounted(() => {
+  document.addEventListener('keydown', onKeydown)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKeydown)
+  if (autoSaveTimer) clearTimeout(autoSaveTimer)
+})
+
 // ─── 字数统计 ───
 const wordCount = computed(() => {
   return editor.value?.storage.characterCount.characters() || 0
@@ -176,7 +244,9 @@ function clearDoc() {
   if (!confirm('确定清空文档？')) return
   editor.value?.commands.clearContent()
   docTitle.value = '正文'
+  currentFileId.value = null
   localStorage.removeItem('jc_tiptap_doc')
+  emitEvent('editor-file-changed', { fileId: null })
 }
 
 // ─── 悬浮 AI 工具 ───
