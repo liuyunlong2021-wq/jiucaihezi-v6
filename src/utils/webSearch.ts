@@ -58,7 +58,7 @@ export async function webSearch(query: string, maxResults = 5): Promise<WebSearc
       headers: { 
         'Accept': 'application/json'
       },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(60000),
     })
 
     if (!res.ok) {
