@@ -38,25 +38,62 @@ export async function webSearch(query: string, maxResults = 5): Promise<WebSearc
   const start = Date.now()
 
   try {
-    // 通过 Nginx 代理调用 Jina Search（API Key 藏在 Nginx 配置里）
+    // 优先通过 Nginx 代理调用（API Key 藏在 Nginx 配置里）
+    // 如果代理不可用，降级为直接调用（可能有 CORS 或限流问题）
     const proxyUrl = `/api/web-search/${encodeURIComponent(query)}`
+    let data: any
 
-    const res = await fetch(proxyUrl, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'X-Retain-Images': 'none',        // 不要图片，省 token
-      },
-      signal: AbortSignal.timeout(15000),  // 15 秒超时
-    })
-
-    if (!res.ok) {
-      console.warn(`[WebSearch] Jina API 返回 ${res.status}，降级为无搜索`)
-      return { query, results: [], markdown: '', tokenEstimate: 0, searchTime: Date.now() - start }
+    try {
+      const res = await fetch(proxyUrl, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(15000),
+      })
+      if (res.ok) {
+        data = await res.json()
+      }
+    } catch {
+      // 代理不可用，忽略
     }
 
-    const data = await res.json()
+    // 代理失败时的降级方案：通过 Jina Reader 抓取 Google 搜索结果页
+    if (!data || !data.data || data.code === 401) {
+      try {
+        const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&hl=zh-CN&num=${maxResults}`
+        const readerRes = await fetch(`https://r.jina.ai/${googleUrl}`, {
+          method: 'GET',
+          headers: {
+            'Accept': 'text/plain',
+            'X-Retain-Images': 'none',
+            'X-Return-Format': 'text',
+          },
+          signal: AbortSignal.timeout(15000),
+        })
+
+        if (readerRes.ok) {
+          const plainText = await readerRes.text()
+          const searchTime = Date.now() - start
+          // 截取前 4000 字符（约 2000 token），避免注入过多内容
+          const trimmedText = plainText.slice(0, 4000)
+          const markdown = buildReaderSearchMarkdown(query, trimmedText)
+          return {
+            query,
+            results: [{ title: 'Google 搜索结果', url: googleUrl, content: trimmedText }],
+            markdown,
+            tokenEstimate: Math.ceil(markdown.length / 2),
+            searchTime,
+          }
+        }
+      } catch {
+        // Reader 也失败了
+      }
+    }
+
     const searchTime = Date.now() - start
+
+    if (!data?.data) {
+      return { query, results: [], markdown: '', tokenEstimate: 0, searchTime }
+    }
 
     // Jina Search 返回格式: { data: [{ title, url, content, description }] }
     const items: SearchResult[] = (data.data || [])
@@ -101,6 +138,25 @@ function buildSearchMarkdown(query: string, results: SearchResult[]): string {
 
   lines.push('---')
   lines.push('请基于以上搜索结果回答用户问题。如果搜索结果中没有相关信息，请如实告知。引用信息时请注明来源。')
+
+  return lines.join('\n')
+}
+
+/**
+ * 将 Jina Reader 抓取的纯文本搜索结果格式化
+ */
+function buildReaderSearchMarkdown(query: string, rawText: string): string {
+  if (!rawText.trim()) return ''
+
+  const lines: string[] = [
+    `[联网搜索结果] 搜索词: "${query}"`,
+    `搜索时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+    '',
+    rawText,
+    '',
+    '---',
+    '请基于以上搜索结果回答用户问题。如果搜索结果中没有相关信息，请如实告知。引用信息时请注明来源。',
+  ]
 
   return lines.join('\n')
 }
