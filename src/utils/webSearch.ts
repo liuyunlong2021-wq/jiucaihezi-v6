@@ -9,6 +9,8 @@
  * 费用: Jina 免费 100万 Token/月，足够日均 150 用户使用
  */
 
+import { resolveApiConfig } from './api'
+
 /** 搜索结果条目 */
 export interface SearchResult {
   title: string
@@ -38,12 +40,16 @@ export async function webSearch(query: string, maxResults = 5): Promise<WebSearc
   const start = Date.now()
 
   try {
-    // 通过 Nginx 代理调用 Jina Search（API Key 藏在 Nginx 配置里）
-    const proxyUrl = `/api/web-search/${encodeURIComponent(query)}`
+    // 直接调用 Jina Search API（前端直连方案）
+    // 用户已提供 API Key，无需经过 Nginx 代理，解决 Cloudflare Pages 静态部署下的 404/JSON解析失败问题
+    const apiUrl = `https://s.jina.ai/${encodeURIComponent(query)}`
 
-    const res = await fetch(proxyUrl, {
+    const res = await fetch(apiUrl, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
+      headers: { 
+        'Accept': 'application/json',
+        'Authorization': 'Bearer jina_7182c05eeca34cd8a64278bdeb8b48e2AhGhp03kGODG3WTPkAxFG6DwWzqO'
+      },
       signal: AbortSignal.timeout(15000),
     })
 
