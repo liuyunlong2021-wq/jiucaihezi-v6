@@ -21,7 +21,7 @@ const props = defineProps<{
   content: string
   role: 'user' | 'assistant' | 'system' | 'tool'
   agentName?: string
-  index: number
+  messageId: string
   toolCalls?: ToolCall[]
   toolName?: string
   images?: string[]  // 图片附件
@@ -29,8 +29,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'retry', index: number): void
-  (e: 'delete', index: number): void
+  (e: 'retry', messageId: string): void
+  (e: 'delete', messageId: string): void
 }>()
 
 const copyLabel = ref('content_copy')
@@ -184,7 +184,7 @@ function appendToEditor() {
         <button class="msg-action-btn" @click="copyMessage" :title="copyLabel === 'check' ? '已复制' : '复制'">
           <span class="mso">{{ copyLabel }}</span> {{ copyLabel === 'check' ? '已复制' : '复制' }}
         </button>
-        <button class="msg-action-btn danger" @click="emit('delete', index)" title="删除">
+        <button class="msg-action-btn danger" @click="emit('delete', messageId)" title="删除">
           <span class="mso">delete_outline</span> 删除
         </button>
       </div>
@@ -192,10 +192,10 @@ function appendToEditor() {
         <button class="msg-action-btn" @click="copyMessage">
           <span class="mso">{{ copyLabel }}</span> {{ copyLabel === 'check' ? '已复制' : '复制' }}
         </button>
-        <button class="msg-action-btn" @click="emit('retry', index)" title="重新发送">
+        <button class="msg-action-btn" @click="emit('retry', messageId)" title="重新发送">
           <span class="mso">refresh</span> 重发
         </button>
-        <button class="msg-action-btn danger" @click="emit('delete', index)">
+        <button class="msg-action-btn danger" @click="emit('delete', messageId)">
           <span class="mso">delete_outline</span> 删除
         </button>
       </div>

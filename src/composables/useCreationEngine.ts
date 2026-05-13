@@ -11,9 +11,13 @@ import { generateImage, generateVideo, generateAudio } from '@/api/media-generat
 // ─── 主入口（fire-and-forget，支持并发） ───
 export function runCreation() {
   const m = currentModel.value
-  if (!m) { alert('请先选择模型'); return }
+  if (!m) {
+    showCreationError('请先选择模型')
+    return
+  }
   if (!cpState.prompt.trim() && m.provider !== 'newapi-suno') {
-    alert('请输入提示词'); return
+    showCreationError('请输入提示词')
+    return
   }
 
   // 快照参数（允许用户在生成中修改参数继续提交）
@@ -39,7 +43,7 @@ export function runCreation() {
     cpState.generating = cpState.runningTasks > 0
     if (cpState.runningTasks > 0) {
       cpState.progressText = `${cpState.runningTasks}个任务生成中...`
-    } else {
+    } else if (!cpState.progressText.startsWith('生成失败:')) {
       cpState.progress = 0
       cpState.progressText = ''
     }
@@ -116,15 +120,14 @@ async function _executeCreation(snap: {
   } catch (e: any) {
     // BUG-8 修复: 用状态文字替代 alert()，避免多任务并发时阻塞 UI
     const errMsg = e.message || String(e)
-    cpState.progressText = `❌ 生成失败: ${errMsg.slice(0, 100)}`
+    showCreationError(errMsg.slice(0, 100))
     console.error('Creation engine error:', e)
-    // 3 秒后自动清除错误提示
-    setTimeout(() => {
-      if (cpState.progressText.startsWith('❌')) {
-        cpState.progressText = cpState.runningTasks > 0 ? `${cpState.runningTasks}个任务生成中...` : ''
-      }
-    }, 5000)
   }
+}
+
+function showCreationError(message: string) {
+  cpState.progress = 0
+  cpState.progressText = `生成失败: ${message}`
 }
 
 // ─── 工具 ───

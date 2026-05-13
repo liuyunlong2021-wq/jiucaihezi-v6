@@ -33,6 +33,10 @@ async function loadTab() {
   selectAll.value = false
   selectedIds.value.clear()
   items.value = await fileStore.loadByCategory(activeTab.value)
+  if (currentFolder.value) {
+    const latestFolder = items.value.find(f => f.id === currentFolder.value?.id)
+    currentFolder.value = latestFolder || null
+  }
 }
 
 onMounted(loadTab)
@@ -70,7 +74,7 @@ async function deleteSelected() {
   if (selectedIds.value.size === 0) return
   if (!confirm(`确定删除 ${selectedIds.value.size} 个文件？`)) return
   for (const id of selectedIds.value) {
-    await fileStore.deleteFile(id)
+    await deleteFileAndDetach(id)
   }
   selectedIds.value.clear()
   selectAll.value = false
@@ -123,7 +127,7 @@ function openInEditor() {
 }
 async function deleteFile() {
   const f = contextMenu.value.file; closeContextMenu()
-  if (f) { await fileStore.deleteFile(f.id); await loadTab() }
+  if (f) { await deleteFileAndDetach(f.id); await loadTab() }
 }
 
 async function knowledgeBackup() {
@@ -261,6 +265,11 @@ function openSkillInEditor() {
   emitEvent('open-in-editor', { name: s.name, content: s.skillContent || '' })
   emitEvent('switch-panel', 'editor')
 }
+function openSkillDetail(skill: any) {
+  if (!skill) return
+  emitEvent('open-in-editor', { name: skill.name, content: skill.skillContent || skill.description || '' })
+  emitEvent('switch-panel', 'editor')
+}
 function deleteSkill() {
   const s = skillMenu.value.skill; closeSkillMenu()
   if (!s) return
@@ -321,10 +330,31 @@ async function deleteFolderItem() {
     if (!confirm(`确定删除文件夹「${f.name}」及其所有内容？`)) return
     const children = (f.metadata?.children as string[]) || []
     for (const cid of children) { await fileStore.deleteFile(cid) }
+  } else {
+    await detachFromFolder(f.id)
   }
   await fileStore.deleteFile(f.id)
   if (currentFolder.value?.id === f.id) currentFolder.value = null
   await loadTab()
+}
+
+async function detachFromFolder(fileId: string) {
+  const all = await fileStore.loadByCategory(activeTab.value)
+  const parents = all.filter(f => {
+    const children = (f.metadata?.children as string[]) || []
+    return f.mimeType === 'folder' && children.includes(fileId)
+  })
+  for (const parent of parents) {
+    const children = ((parent.metadata?.children as string[]) || []).filter(id => id !== fileId)
+    await fileStore.updateFile(parent.id, {
+      metadata: { ...(parent.metadata || {}), children },
+    })
+  }
+}
+
+async function deleteFileAndDetach(fileId: string) {
+  await detachFromFolder(fileId)
+  await fileStore.deleteFile(fileId)
 }
 
 // 过滤：排除已在文件夹中的文件（除非正在查看文件夹）
@@ -408,6 +438,7 @@ const displayFiles = computed(() => {
         <!-- 搭子 tab -->
         <template v-if="activeTab === 'skill'">
           <div v-for="s in agentStore.getMySkills()" :key="s.id" class="fp-item skill"
+               @dblclick="openSkillDetail(s)"
                @contextmenu="openSkillMenu($event, s)">
             <span class="mso" style="font-size:16px;color:var(--olive)">smart_toy</span>
             <span class="fp-item-name">{{ s.name }}</span>

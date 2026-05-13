@@ -168,6 +168,7 @@ function extractStatus(data: any): string {
 // ---- Core Fetch Helpers ----
 
 async function apiCall(path: string, body: any | null, method = 'POST'): Promise<any> {
+  await ensureConfig()
   const key = getApiKey()
   if (!key) throw new Error('请先配置 API Key')
   const opts: RequestInit = { method, headers: authHeaders() }
@@ -215,6 +216,7 @@ function checkUpstreamError(data: any) {
  * 用于 Grok 等不支持 base64 的模型
  */
 async function uploadImage(dataUrl: string): Promise<string> {
+  await ensureConfig()
   const blob = dataUrlToBlob(dataUrl)
   const formData = new FormData()
   formData.append('file', blob, 'reference.png')
@@ -244,6 +246,7 @@ async function uploadImage(dataUrl: string): Promise<string> {
 }
 
 async function apiCallMultipart(path: string, fields: Record<string, string | Blob>): Promise<any> {
+  await ensureConfig()
   const key = getApiKey()
   if (!key) throw new Error('请先配置 API Key')
   const formData = new FormData()
@@ -347,6 +350,7 @@ export async function generateImage(
   params: ImageGenParams,
   onProgress?: (elapsed: number, status: string) => void,
 ): Promise<MediaResult> {
+  await ensureConfig()
   const { model, prompt, image, aspectRatio, resolution } = params
   const size = params.size || mapGptImageSize(aspectRatio || '1:1', resolution)
 
@@ -416,6 +420,7 @@ export async function generateVideo(
   params: VideoGenParams,
   onProgress?: (elapsed: number, status: string) => void,
 ): Promise<MediaResult> {
+  await ensureConfig()
   const { model, prompt, aspectRatio, resolution, duration, imageUrl } = params
 
   // ── Seedance 系列 → /v1/videos (文档: seedance-2-0-fast-use-guide.md) ──
@@ -521,6 +526,7 @@ export async function generateVideo(
  * POST /suno/submit/music → GET /suno/fetch/:id
  */
 export async function generateAudio(prompt: string): Promise<MediaResult> {
+  await ensureConfig()
   const key = getApiKey()
   if (!key) throw new Error('请先配置 API Key')
 

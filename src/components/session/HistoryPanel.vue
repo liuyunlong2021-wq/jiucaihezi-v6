@@ -10,6 +10,7 @@ const sessionStore = useSessionStore()
 const agentStore = useAgentStore()
 const searchQuery = ref('')
 const ctxMenu = ref({ show: false, x: 0, y: 0, sessionId: '', title: '' })
+const historyError = ref('')
 
 const filteredSessions = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -40,17 +41,30 @@ function openCtxMenu(e: MouseEvent, s: any) {
 }
 function closeCtxMenu() { ctxMenu.value.show = false }
 
-function renameSession() {
+async function renameSession() {
+  const sessionId = ctxMenu.value.sessionId
+  const oldTitle = ctxMenu.value.title
   const newTitle = prompt('重命名对话', ctxMenu.value.title)
   closeCtxMenu()
-  if (newTitle && newTitle !== ctxMenu.value.title) {
-    sessionStore.renameSession(ctxMenu.value.sessionId, newTitle)
+  if (newTitle && newTitle !== oldTitle) {
+    try {
+      historyError.value = ''
+      await sessionStore.renameSession(sessionId, newTitle)
+    } catch (e: any) {
+      historyError.value = e?.message || '重命名失败'
+    }
   }
 }
-function deleteSession() {
+async function deleteSession() {
+  const sessionId = ctxMenu.value.sessionId
   closeCtxMenu()
   if (!confirm('确定删除这条对话记录？')) return
-  sessionStore.deleteSession(ctxMenu.value.sessionId)
+  try {
+    historyError.value = ''
+    await sessionStore.deleteSession(sessionId)
+  } catch (e: any) {
+    historyError.value = e?.message || '删除失败'
+  }
 }
 </script>
 
@@ -71,6 +85,7 @@ function deleteSession() {
         class="hp-search-input"
       />
     </div>
+    <div v-if="historyError" class="hp-error">{{ historyError }}</div>
     <div class="hp-list">
       <div
         v-for="s in filteredSessions"
@@ -154,6 +169,7 @@ function deleteSession() {
   justify-content: center; gap: 8px; height: 200px; color: var(--ink3);
 }
 .hp-empty p { font-size: 12px; }
+.hp-error { padding: 6px 14px; font-size: 12px; color: #c62828; background: #ffebee; border-bottom: 1px solid var(--line); }
 /* 右键菜单 */
 .hp-ctx-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.1); }
 .hp-ctx-menu { position: fixed; min-width: 140px; padding: 6px; background: #fff; border: 2px solid #ddd; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); z-index: 10000; }

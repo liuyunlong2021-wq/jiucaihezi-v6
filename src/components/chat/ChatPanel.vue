@@ -25,7 +25,8 @@ import SkillPickerBar from './SkillPickerBar.vue'
 const agentStore = useAgentStore()
 const sessionStore = useSessionStore()
 const { messages, isStreaming, sendMessage, stopStream, clearMessages, loadMessages,
-  agentPhase, agentDetail, currentToolProgress, toolHistory } = useChat()
+  agentPhase, agentDetail, currentToolProgress, toolHistory,
+  webSearchEnabled, webSearching, toggleWebSearch } = useChat()
 const {
   routeNotification, isRouting, routeMessage,
   // Superpowers 新增
@@ -39,6 +40,11 @@ const messagesContainer = ref<HTMLElement | null>(null)
 const showModelMenu = ref(false)
 const fileUploader = ref<InstanceType<typeof FileUploader> | null>(null)
 const scrollNav = ref<InstanceType<typeof ChatScrollNav> | null>(null)
+const attachedFileCount = computed(() => fileUploader.value?.attachedFiles?.length || 0)
+const isFileProcessing = computed(() => Boolean(fileUploader.value?.isProcessing))
+const canSend = computed(() => (
+  Boolean(inputText.value.trim()) || attachedFileCount.value > 0
+) && !isStreaming.value && !isFileProcessing.value)
 
 // ─── 引用文件芯片 ───
 interface RefFile {
@@ -292,13 +298,17 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 // 删除消息
-function deleteMessage(index: number) {
+function deleteMessage(messageId: string) {
+  const index = messages.value.findIndex(msg => msg.id === messageId)
+  if (index === -1) return
   messages.value.splice(index, 1)
   persistCurrentSession()
 }
 
 // 重新发送
-function retryMessage(index: number) {
+function retryMessage(messageId: string) {
+  const index = messages.value.findIndex(msg => msg.id === messageId)
+  if (index === -1) return
   const msg = messages.value[index]
   if (msg && msg.role === 'user') {
     // 删除该消息及之后的所有消息
@@ -389,6 +399,12 @@ function onDrop(e: DragEvent) {
             </button>
           </div>
         </div>
+        <!-- 联网搜索开关 -->
+        <button class="cp-pill-toggle" :class="{ on: webSearchEnabled }"
+                title="联网搜索（开启后 AI 会自动搜索全网最新信息）" @click="toggleWebSearch">
+          <span class="cp-pill-dot"></span>
+          <span class="cp-pill-text">🌐 搜索</span>
+        </button>
         <!-- 整理药丸开关 -->
         <button class="cp-pill-toggle" :class="{ on: learningEnabled }"
                 title="整理模式（自动将对话整理到知识库）" @click="toggleLearning">
@@ -438,12 +454,12 @@ function onDrop(e: DragEvent) {
 
       <!-- Message list (使用 MessageBubble 组件) -->
       <MessageBubble
-        v-for="(msg, i) in messages.filter(m => m.content || m.toolCalls)"
+        v-for="msg in messages.filter(m => m.content || m.toolCalls)"
         :key="msg.id"
+        :message-id="msg.id"
         :content="msg.content"
         :role="msg.role"
         :agent-name="msg.agentName"
-        :index="i"
         :tool-calls="msg.toolCalls"
         :tool-name="msg.toolName"
         :images="msg.images"
@@ -451,6 +467,12 @@ function onDrop(e: DragEvent) {
         @retry="retryMessage"
         @delete="deleteMessage"
       />
+
+      <!-- 联网搜索中指示器 -->
+      <div v-if="webSearching" class="cp-web-searching">
+        <span class="mso cp-search-spin" style="font-size:16px">travel_explore</span>
+        <span>🌐 正在搜索全网最新信息...</span>
+      </div>
 
       <!-- Streaming indicator -->
       <div v-if="isStreaming && (!messages.length || !messages[messages.length - 1]?.content)" class="msg assistant">
@@ -518,7 +540,7 @@ function onDrop(e: DragEvent) {
           <button
             v-else
             class="cp-send"
-            :disabled="!inputText.trim()"
+            :disabled="!canSend"
             @click="handleSend"
           >
             <span class="mso">send</span>
@@ -968,5 +990,28 @@ function onDrop(e: DragEvent) {
 }
 .cp-ref-remove:hover {
   background: rgba(200,0,0,.1); color: #c00;
+}
+
+/* ─── 联网搜索指示器 ─── */
+.cp-web-searching {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; margin: 8px 0;
+  background: linear-gradient(135deg, rgba(59,130,246,.08), rgba(107,142,35,.08));
+  border: 1px solid rgba(59,130,246,.2);
+  border-radius: 12px;
+  font-size: 13px; color: var(--ink2); font-weight: 600;
+  animation: search-pulse 1.5s ease infinite;
+}
+@keyframes search-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .6; }
+}
+.cp-search-spin {
+  animation: search-spin 2s linear infinite;
+  color: #3b82f6;
+}
+@keyframes search-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

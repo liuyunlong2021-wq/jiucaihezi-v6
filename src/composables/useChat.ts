@@ -10,6 +10,7 @@
 import { ref, computed } from 'vue'
 import { resolveApiConfig, buildHeaders, buildChatErrorMessage, type ApiConfig } from '@/utils/api'
 import { recallKnowledge } from '@/composables/useBrain'
+import { webSearch } from '@/utils/webSearch'
 
 // ─── 类型定义 ───
 
@@ -62,6 +63,11 @@ export type AgentPhase =
 const messages = ref<ChatMessage[]>([])
 const isStreaming = ref(false)
 const abortController = ref<AbortController | null>(null)
+let activeRunId = 0
+
+// 联网搜索开关（持久化到 localStorage）
+const webSearchEnabled = ref(localStorage.getItem('jc_web_search') === 'true')
+const webSearching = ref(false)  // 搜索中状态
 
 // Agent 状态
 const agentPhase = ref<AgentPhase>('idle')
@@ -80,6 +86,55 @@ function setPhase(phase: AgentPhase, detail = '') {
   agentDetail.value = detail
 }
 
+function beginRun(): number {
+  activeRunId += 1
+  return activeRunId
+}
+
+function invalidateRun() {
+  activeRunId += 1
+}
+
+function isCurrentRun(runId: number): boolean {
+  return runId === activeRunId
+}
+
+function findAssistantMessage(runId: number, messageId: string): ChatMessage | null {
+  if (!isCurrentRun(runId)) return null
+  const msg = messages.value.find(m => m.id === messageId)
+  return msg?.role === 'assistant' && msg.id === messageId ? msg : null
+}
+
+function updateAssistantMessage(
+  runId: number,
+  messageId: string,
+  update: (message: ChatMessage) => void,
+): boolean {
+  const msg = findAssistantMessage(runId, messageId)
+  if (!msg) return false
+  update(msg)
+  return true
+}
+
+function clearStreamingState() {
+  abortController.value = null
+  isStreaming.value = false
+  setPhase('idle')
+  currentToolProgress.value = null
+}
+
+function cancelCurrentRun() {
+  invalidateRun()
+  abortController.value?.abort()
+  clearStreamingState()
+}
+
+function finishController(runId: number, controller: AbortController) {
+  if (!isCurrentRun(runId) || abortController.value !== controller) return
+  abortController.value = null
+  isStreaming.value = false
+}
+
 // ─── 内置工具执行器（小白按钮映射的后端） ───
 
 /**
@@ -92,7 +147,16 @@ async function executeToolCall(call: ToolCall): Promise<string> {
   let args: Record<string, unknown> = {}
   try {
     args = JSON.parse(call.function.arguments || '{}')
-  } catch {}
+  } catch (err) {
+    return JSON.stringify({
+      status: 'error',
+      error: 'INVALID_TOOL_ARGUMENTS_JSON',
+      tool: name,
+      message: `工具 "${name}" 的参数不是合法 JSON，无法执行。`,
+      detail: (err as Error).message,
+      arguments: call.function.arguments,
+    })
+  }
 
   // 内置工具：搜索
   if (name === 'web_search' || name === 'search') {
@@ -240,13 +304,16 @@ export function useChat() {
       files?: Array<{ name: string; content: string }>  // 文本文件附件
     } = {}
   ) {
-    if (!userText.trim() || isStreaming.value) return
+    const hasAttachments = Boolean(options.images?.length || options.files?.length)
+    if ((!userText.trim() && !hasAttachments) || isStreaming.value) return
+    const runId = beginRun()
 
     // 1. 解析 API 配置
     let config: ApiConfig
     try {
       config = await resolveApiConfig()
     } catch (err) {
+      if (!isCurrentRun(runId)) return
       messages.value.push({
         id: createMessageId('assistant'),
         role: 'assistant',
@@ -255,6 +322,8 @@ export function useChat() {
       })
       return
     }
+
+    if (!isCurrentRun(runId)) return
 
     if (!config.apiKey) {
       messages.value.push({
@@ -265,6 +334,8 @@ export function useChat() {
       })
       return
     }
+
+    if (!isCurrentRun(runId)) return
 
     // 2. 添加用户消息（包含附件）
     const userMsg: ChatMessage = {
@@ -285,13 +356,30 @@ export function useChat() {
       systemPrompt += recalled
     }
 
+    // 3.5 联网搜索：在发给 LLM 之前先搜索全网
+    if (webSearchEnabled.value) {
+      try {
+        webSearching.value = true
+        setPhase('thinking', '🌐 正在搜索全网...')
+        const searchResult = await webSearch(userText)
+        if (searchResult.markdown) {
+          systemPrompt += '\n\n' + searchResult.markdown
+          console.log(`[WebSearch] 搜索完成: ${searchResult.results.length} 条结果, ~${searchResult.tokenEstimate} tokens, ${searchResult.searchTime}ms`)
+        }
+      } catch (err) {
+        console.warn('[WebSearch] 搜索失败，降级为无搜索:', (err as Error).message)
+      } finally {
+        webSearching.value = false
+      }
+    }
+
     // 4. 重置本轮状态
     toolHistory.value = []
     currentToolProgress.value = null
     setPhase('sending')
 
     // 5. 开始 tool loop
-    await runToolLoop(config, systemPrompt, options)
+    await runToolLoop(config, systemPrompt, options, runId)
   }
 
   /**
@@ -301,12 +389,14 @@ export function useChat() {
   async function runToolLoop(
     config: ApiConfig,
     systemPrompt: string,
-    options: { agentId?: string; agentName?: string }
+    options: { agentId?: string; agentName?: string },
+    runId: number,
   ) {
     const MAX_TOOL_ROUNDS = 10
     let round = 0
 
     while (round < MAX_TOOL_ROUNDS) {
+      if (!isCurrentRun(runId)) return
       round++
 
       // 构建 API 消息（包括 tool results）
@@ -322,17 +412,18 @@ export function useChat() {
         agentName: options.agentName,
       }
       messages.value.push(aiMsg)
-      const aiMsgIndex = messages.value.length - 1
+      const aiMsgId = aiMsg.id
 
       // 流式请求
       isStreaming.value = true
-      abortController.value = new AbortController()
+      const controller = new AbortController()
+      abortController.value = controller
       setPhase('thinking')
 
       try {
         const res = await fetch(config.apiBase + '/v1/chat/completions', {
           method: 'POST',
-          signal: abortController.value.signal,
+          signal: controller.signal,
           headers: buildHeaders(config),
           body: JSON.stringify({
             model: config.model,
@@ -347,23 +438,37 @@ export function useChat() {
           const raw = await res.text()
           let parsed = null
           try { parsed = raw ? JSON.parse(raw) : null } catch {}
-          messages.value[aiMsgIndex].content = buildChatErrorMessage(res.status, parsed, raw || '请求失败')
-          setPhase('error', `API ${res.status}`)
-          isStreaming.value = false
-          abortController.value = null
+          const didWriteError = updateAssistantMessage(runId, aiMsgId, (msg) => {
+            msg.content = buildChatErrorMessage(res.status, parsed, raw || '请求失败')
+          })
+          if (didWriteError && isCurrentRun(runId)) setPhase('error', `API ${res.status}`)
+          finishController(runId, controller)
           return
         }
 
         // 读取 SSE 流
-        const reader = res.body!.getReader()
+        if (!res.body) {
+          const didWriteError = updateAssistantMessage(runId, aiMsgId, (msg) => {
+            msg.content = '⚠️ API 响应为空，无法读取流式内容。'
+          })
+          if (didWriteError && isCurrentRun(runId)) setPhase('error', '空响应')
+          finishController(runId, controller)
+          return
+        }
+
+        const reader = res.body.getReader()
         const result = await new Promise<SSEResult>((resolve, reject) => {
           readSSEStream(
             reader,
             (fullText) => {
-              messages.value[aiMsgIndex].content = fullText
-              if (agentPhase.value !== 'replying') setPhase('replying')
+              if (updateAssistantMessage(runId, aiMsgId, (msg) => {
+                msg.content = fullText
+              }) && agentPhase.value !== 'replying') {
+                setPhase('replying')
+              }
             },
             (toolCalls) => {
+              if (!findAssistantMessage(runId, aiMsgId)) return
               // 实时显示 tool_calls
               if (agentPhase.value !== 'tool') {
                 const names = toolCalls.map(tc => tc.function.name).join(', ')
@@ -376,13 +481,23 @@ export function useChat() {
         })
 
         // 更新最终消息
-        messages.value[aiMsgIndex].content = result.fullText
-        messages.value[aiMsgIndex].toolCalls = result.toolCalls.length > 0 ? result.toolCalls : undefined
+        const didUpdateFinal = updateAssistantMessage(runId, aiMsgId, (msg) => {
+          msg.content = result.fullText
+          msg.toolCalls = result.toolCalls.length > 0 ? result.toolCalls : undefined
+        })
+        if (!didUpdateFinal) {
+          finishController(runId, controller)
+          return
+        }
 
         // ★ 判断是否有 tool_calls 需要执行
         if (result.finishReason === 'tool_calls' || result.toolCalls.length > 0) {
           // 执行所有 tool calls
           for (const call of result.toolCalls) {
+            if (!findAssistantMessage(runId, aiMsgId)) {
+              finishController(runId, controller)
+              return
+            }
             // 更新进度
             const progress: ToolProgress = {
               toolCallId: call.id,
@@ -401,9 +516,20 @@ export function useChat() {
             let toolResult: string
             try {
               toolResult = await executeToolCall(call)
+              try {
+                const parsedToolResult = JSON.parse(toolResult) as { status?: string; error?: unknown }
+                if (parsedToolResult.status === 'error' || parsedToolResult.error) {
+                  progress.isError = true
+                }
+              } catch {}
             } catch (err) {
               toolResult = JSON.stringify({ error: (err as Error).message })
               progress.isError = true
+            }
+
+            if (!findAssistantMessage(runId, aiMsgId)) {
+              finishController(runId, controller)
+              return
             }
 
             // 更新进度
@@ -426,31 +552,35 @@ export function useChat() {
           }
 
           // 继续循环 — 将 tool results 回送给 LLM
-          isStreaming.value = false
-          abortController.value = null
+          finishController(runId, controller)
           continue
         }
 
         // 无 tool_calls → 正常结束
-        setPhase('done')
-        isStreaming.value = false
-        abortController.value = null
-        currentToolProgress.value = null
+        if (isCurrentRun(runId)) {
+          setPhase('done')
+          currentToolProgress.value = null
+        }
+        finishController(runId, controller)
         return
 
       } catch (err) {
+        if (!isCurrentRun(runId)) return
+        const message = (err as Error).message
         const errMsg = (err as Error).name === 'AbortError'
           ? '⚠️ 生成已手动停止'
-          : '⚠️ ' + (err as Error).message
-        messages.value[aiMsgIndex].content = errMsg
-        setPhase('error', (err as Error).message)
-        isStreaming.value = false
-        abortController.value = null
+          : message.startsWith('⚠️') ? message : '⚠️ ' + message
+        const didWriteError = updateAssistantMessage(runId, aiMsgId, (msg) => {
+          msg.content = errMsg
+        })
+        if (didWriteError) setPhase('error', message)
+        finishController(runId, controller)
         return
       }
     }
 
     // 超过最大轮次
+    if (!isCurrentRun(runId)) return
     messages.value.push({
       id: createMessageId('assistant'),
       role: 'assistant',
@@ -544,14 +674,12 @@ export function useChat() {
 
   /** 停止生成 */
   function stopStream() {
-    abortController.value?.abort()
-    abortController.value = null
-    isStreaming.value = false
-    setPhase('idle')
+    cancelCurrentRun()
   }
 
   /** 清空消息 */
   function clearMessages() {
+    cancelCurrentRun()
     messages.value = []
     setPhase('idle')
     toolHistory.value = []
@@ -560,7 +688,17 @@ export function useChat() {
 
   /** 加载历史消息 */
   function loadMessages(history: ChatMessage[]) {
+    cancelCurrentRun()
     messages.value = history
+    setPhase('idle')
+    toolHistory.value = []
+    currentToolProgress.value = null
+  }
+
+  /** 切换联网搜索开关 */
+  function toggleWebSearch() {
+    webSearchEnabled.value = !webSearchEnabled.value
+    localStorage.setItem('jc_web_search', String(webSearchEnabled.value))
   }
 
   return {
@@ -575,5 +713,9 @@ export function useChat() {
     agentDetail,
     currentToolProgress,
     toolHistory,
+    // 联网搜索
+    webSearchEnabled,
+    webSearching,
+    toggleWebSearch,
   }
 }

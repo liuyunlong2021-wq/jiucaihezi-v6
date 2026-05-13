@@ -59,6 +59,7 @@ export const useSessionStore = defineStore('sessions', () => {
 
     const title = buildTitle(messages)
     const now = Date.now()
+    const existingRecord = await idb.getRecord('conversations', sessionId) as any
 
     // 保存 conversation 元数据
     const convRecord = {
@@ -68,7 +69,7 @@ export const useSessionStore = defineStore('sessions', () => {
       title,
       kind: 'active',
       agentId: agentId || '',
-      createdAt: now,
+      createdAt: existingRecord?.createdAt || now,
       updatedAt: now,
     }
     await idb.setRecord('conversations', convRecord)
@@ -150,6 +151,12 @@ export const useSessionStore = defineStore('sessions', () => {
   // ─── 加载所有对话列表 ───
   async function loadAllSessions() {
     const records = await idb.getAll('conversations')
+    const messageRecords = await idb.getAll('messages')
+    const messageCounts = new Map(
+      messageRecords
+        .filter((r: any) => r && r.id)
+        .map((r: any) => [r.id, Array.isArray(r.items) ? r.items.length : 0])
+    )
     sessions.value = records
       .filter((r: any) => r && r.id)
       .map((r: any) => ({
@@ -158,7 +165,7 @@ export const useSessionStore = defineStore('sessions', () => {
         agentId: r.agentId || r.scopeKey || '',
         createdAt: r.createdAt || 0,
         updatedAt: r.updatedAt || 0,
-        messageCount: 0,
+        messageCount: messageCounts.get(r.id) || 0,
       }))
       .sort((a: Session, b: Session) => b.updatedAt - a.updatedAt)
   }

@@ -58,6 +58,9 @@ const RAW_KEY = 'jc_brain_raw_v1'
 const WIKI_KEY = 'jc_brain_wiki_v1'
 const INDEX_KEY = 'jc_brain_index_v1'
 const LOG_KEY = 'jc_brain_log_v1'
+const MAX_WIKI_PAGES = 250
+const MAX_RAW_ENTRIES = 500
+const MAX_MIRROR_CONTENT_CHARS = 4000
 
 function loadRaw(): BrainRawEntry[] {
   try { return JSON.parse(localStorage.getItem(RAW_KEY) || '[]') } catch { return [] }
@@ -86,10 +89,15 @@ function loadWiki(): BrainWikiPage[] {
 }
 function saveWiki(pages: BrainWikiPage[]) {
   try {
-    const json = JSON.stringify(pages)
+    const normalized = pages
+      .filter(p => p && p.id)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+      .slice(0, MAX_WIKI_PAGES)
+      .map(p => ({ ...p, content: p.content.slice(0, MAX_MIRROR_CONTENT_CHARS) }))
+    const json = JSON.stringify(normalized)
     if (json.length > 4 * 1024 * 1024) {
       // 归档最旧的页面
-      const sorted = [...pages].sort((a, b) => a.updatedAt - b.updatedAt)
+      const sorted = [...normalized].sort((a, b) => a.updatedAt - b.updatedAt)
       const half = Math.floor(sorted.length / 2)
       for (let i = 0; i < half; i++) sorted[i].archived = true
       localStorage.setItem(WIKI_KEY, JSON.stringify(sorted))
@@ -98,7 +106,7 @@ function saveWiki(pages: BrainWikiPage[]) {
       return
     }
     localStorage.setItem(WIKI_KEY, json)
-    wikiPages.value = pages
+    wikiPages.value = normalized
   } catch (e) {
     console.error('[Brain] 保存 wiki 失败，可能存储已满:', e)
   }
@@ -156,7 +164,7 @@ export function ingestConversation(skillId: string, conversation: string) {
     collectedAt: Date.now(), topic: 'conversation',
   }
   entries.push(entry)
-  saveRaw(entries)
+  saveRaw(entries.slice(-MAX_RAW_ENTRIES))
 }
 
 // ─── Stats ───
@@ -192,6 +200,7 @@ export async function runBrainCompilation(skills: SkillConfig[]): Promise<BrainS
     const config = await resolveApiConfig()
     const allSuggestions: BrainSuggestion[] = []
     const touchedPageIds: string[] = []
+    const successfullyProcessedRawIds = new Set<string>()
 
     for (const [skillId, entries] of Object.entries(grouped)) {
       const skill = skills.find(s => s.id === skillId)
@@ -246,6 +255,7 @@ ${conversationText}
           const jsonMatch = text.match(/\[[\s\S]*\]/)
           if (jsonMatch) {
             const items = JSON.parse(jsonMatch[0]) as { type: string; content: string; conflict?: string }[]
+            for (const entry of entries) successfullyProcessedRawIds.add(entry.id)
             for (const item of items) {
               allSuggestions.push({
                 id: uid('sug'), skillId, skillName: skill.name,
@@ -255,6 +265,8 @@ ${conversationText}
               })
             }
           }
+        } else {
+          console.warn('[Brain] Compile API error:', skillId, res.status)
         }
       } catch (e) { console.warn('[Brain] Compile error:', skillId, e) }
     }
@@ -263,7 +275,7 @@ ${conversationText}
 
     // 标记已索引
     const updatedRaws = raws.map(r => {
-      if (!r.indexed && unindexed.some(u => u.id === r.id)) return { ...r, indexed: true }
+      if (!r.indexed && successfullyProcessedRawIds.has(r.id)) return { ...r, indexed: true }
       return r
     })
     saveRaw(updatedRaws)
@@ -271,11 +283,27 @@ ${conversationText}
     // 保存 wiki 页 + Cascade Updates
     if (allSuggestions.length > 0) {
       const wikis = loadWiki()
-      const newPage: BrainWikiPage = {
-        id: uid('wiki'), skillId: '_compilation', title: `整理 ${new Date().toLocaleDateString('zh-CN')}`,
-        content: allSuggestions.map(s => `[${s.type}] ${s.content}`).join('\n'),
-        sources: unindexed.map(e => e.id), updatedAt: Date.now(),
-        topic: 'compilation', seeAlso: [], archived: false, conflicts: [],
+      const bySkill: Record<string, BrainSuggestion[]> = {}
+      for (const suggestion of allSuggestions) {
+        if (!bySkill[suggestion.skillId]) bySkill[suggestion.skillId] = []
+        bySkill[suggestion.skillId].push(suggestion)
+      }
+      const newPages: BrainWikiPage[] = Object.entries(bySkill).map(([compiledSkillId, skillSuggestions]) => ({
+        id: uid('wiki'),
+        skillId: compiledSkillId || '_compilation',
+        title: `整理 ${skillSuggestions[0]?.skillName || compiledSkillId} ${new Date().toLocaleDateString('zh-CN')}`,
+        content: skillSuggestions.map(s => `[${s.type}] ${s.content}`).join('\n'),
+        sources: unindexed.filter(e => e.skillId === compiledSkillId).map(e => e.id),
+        updatedAt: Date.now(),
+        topic: compiledSkillId || 'compilation',
+        seeAlso: [],
+        archived: false,
+        conflicts: [],
+      }))
+      const newPage: BrainWikiPage = newPages[0]
+      if (!newPage) {
+        suggestions.value = allSuggestions
+        return allSuggestions
       }
 
       // Cascade: 检查冲突标注，更新相关页面的 conflicts 字段
@@ -295,17 +323,19 @@ ${conversationText}
       }
 
       // Cascade: 更新同 topic 页面的 seeAlso
-      const sameTopic = wikis.filter(w => w.topic === newPage.topic && w.id !== newPage.id && !w.archived)
-      for (const p of sameTopic) {
-        if (!p.seeAlso) p.seeAlso = []
-        if (!p.seeAlso.includes(newPage.id)) p.seeAlso.push(newPage.id)
-        newPage.seeAlso.push(p.id)
-        touchedPageIds.push(p.id)
+      for (const page of newPages) {
+        const sameTopic = wikis.filter(w => w.topic === page.topic && w.id !== page.id && !w.archived)
+        for (const p of sameTopic) {
+          if (!p.seeAlso) p.seeAlso = []
+          if (!p.seeAlso.includes(page.id)) p.seeAlso.push(page.id)
+          page.seeAlso.push(p.id)
+          touchedPageIds.push(p.id)
+        }
       }
 
-      wikis.push(newPage)
+      wikis.push(...newPages)
       saveWiki(wikis)
-      touchedPageIds.push(newPage.id)
+      touchedPageIds.push(...newPages.map(p => p.id))
     }
 
     // Post-Ingest: 更新 index + 追加 log
