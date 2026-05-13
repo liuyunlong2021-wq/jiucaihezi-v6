@@ -126,6 +126,10 @@ async function addFile(file: File) {
       }
       entry.textContent = text
       entry.status = 'ready'
+    } else {
+      entry.status = 'error'
+      entry.error = '暂不支持这个文件格式'
+      showToast(entry.error)
     }
   } catch (err: any) {
     entry.status = 'error'

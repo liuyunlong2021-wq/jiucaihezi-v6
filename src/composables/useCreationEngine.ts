@@ -114,8 +114,16 @@ async function _executeCreation(snap: {
       addResult({ url: result.url, type: 'audio', model: modelDef.label, task: 'text-music', ts: Date.now() })
     }
   } catch (e: any) {
-    alert('生成失败: ' + (e.message || e))
+    // BUG-8 修复: 用状态文字替代 alert()，避免多任务并发时阻塞 UI
+    const errMsg = e.message || String(e)
+    cpState.progressText = `❌ 生成失败: ${errMsg.slice(0, 100)}`
     console.error('Creation engine error:', e)
+    // 3 秒后自动清除错误提示
+    setTimeout(() => {
+      if (cpState.progressText.startsWith('❌')) {
+        cpState.progressText = cpState.runningTasks > 0 ? `${cpState.runningTasks}个任务生成中...` : ''
+      }
+    }, 5000)
   }
 }
 

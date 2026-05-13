@@ -32,7 +32,9 @@ if (!localStorage.getItem('jcModel')) {
 }
 
 // Initialize IndexedDB, then mount app
-initDB().then(() => {
+initDB().catch((err) => {
+  console.warn('[JC] IndexedDB 初始化失败，数据可能无法持久化:', err)
+}).finally(() => {
   const app = createApp(App)
   app.use(createPinia())
   app.mount('#app')

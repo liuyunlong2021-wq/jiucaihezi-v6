@@ -41,10 +41,27 @@ export interface MediaResult {
 
 // ---- API Config ----
 
-const BASE_URL = 'https://api.jiucaihezi.studio'
+// BUG-11 修复: 统一使用 resolveApiConfig，不再独立读 localStorage
+import { resolveApiConfig as _resolveApiConfig } from '@/utils/api'
+
+let _cachedConfig: { apiKey: string; apiBase: string } | null = null
+
+async function ensureConfig(): Promise<{ apiKey: string; apiBase: string }> {
+  if (_cachedConfig) return _cachedConfig
+  const config = await _resolveApiConfig()
+  _cachedConfig = { apiKey: config.apiKey, apiBase: config.apiBase }
+  // 30秒后过期重新读取
+  setTimeout(() => { _cachedConfig = null }, 30000)
+  return _cachedConfig
+}
 
 function getApiKey(): string {
-  return localStorage.getItem('jcApiKey') || ''
+  // 同步读取（兼容旧调用），优先用缓存
+  return _cachedConfig?.apiKey || localStorage.getItem('jcApiKey') || ''
+}
+
+function getApiBase(): string {
+  return _cachedConfig?.apiBase || 'https://api.jiucaihezi.studio'
 }
 
 function authHeaders(): Record<string, string> {
@@ -155,7 +172,7 @@ async function apiCall(path: string, body: any | null, method = 'POST'): Promise
   if (!key) throw new Error('请先配置 API Key')
   const opts: RequestInit = { method, headers: authHeaders() }
   if (method !== 'GET' && body) opts.body = JSON.stringify(body)
-  const res = await fetch(`${BASE_URL}${path}`, opts)
+  const res = await fetch(`${getApiBase()}${path}`, opts)
   if (!res.ok) {
     if (res.status === 429) {
       throw new Error('请求过于频繁，请稍后再试')
@@ -179,7 +196,7 @@ async function uploadImage(dataUrl: string): Promise<string> {
   const key = getApiKey()
   if (!key) throw new Error('请先配置 API Key')
 
-  const res = await fetch(`${BASE_URL}/v1/files`, {
+  const res = await fetch(`${getApiBase()}/v1/files`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${key}` },
     body: formData,
@@ -207,7 +224,7 @@ async function apiCallMultipart(path: string, fields: Record<string, string | Bl
     if (v instanceof Blob) formData.append(k, v, 'image.png')
     else formData.append(k, v)
   }
-  const res = await fetch(`${BASE_URL}${path}`, {
+  const res = await fetch(`${getApiBase()}${path}`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${key}` },
     body: formData,
@@ -253,8 +270,12 @@ async function pollTask(
         onProgress?.(elapsed, '连接恢复中...')
         if (consecutive521 * intervalMs < 180000) continue  // 3 分钟内继续
       }
-      // 其他临时网络错误也重试
-      if (i < maxPolls - 1) continue
+      // BUG-14 修复: 明确的鉴权/配额错误不重试，立即告知用户
+      if (e.message?.includes('401') || e.message?.includes('403') || e.message?.includes('400')) {
+        throw e
+      }
+      // 其他临时网络错误重试（最多 3 次后放弃）
+      if (i < maxPolls - 1 && i < 3) continue
       throw e
     }
     const status = extractStatus(data)
@@ -460,7 +481,7 @@ export async function generateAudio(prompt: string): Promise<MediaResult> {
 
   // Step 1: 提交 → /suno/submit/music (NewAPI relay-router.go:184)
   const body = { gpt_description_prompt: prompt, mv: 'chirp-fenix' }
-  const submitRes = await fetch(`${BASE_URL}/suno/submit/music`, {
+  const submitRes = await fetch(`${getApiBase()}/suno/submit/music`, {
     method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
   })
   if (!submitRes.ok) {
@@ -486,7 +507,7 @@ export async function generateAudio(prompt: string): Promise<MediaResult> {
   // Step 2: 轮询 → /suno/fetch/:id (NewAPI relay-router.go:186)
   for (let i = 0; i < 120; i++) {
     await new Promise(r => setTimeout(r, 5000))
-    const pollRes = await fetch(`${BASE_URL}/suno/fetch/${taskId}`, {
+    const pollRes = await fetch(`${getApiBase()}/suno/fetch/${taskId}`, {
       method: 'GET', headers: authHeaders(),
     })
     if (!pollRes.ok) continue
@@ -515,7 +536,7 @@ export async function generateAudio(prompt: string): Promise<MediaResult> {
 async function pollSunoByClipId(clipId: string): Promise<MediaResult> {
   for (let i = 0; i < 120; i++) {
     await new Promise(r => setTimeout(r, 5000))
-    const res = await fetch(`${BASE_URL}/suno/fetch/${clipId}`, {
+    const res = await fetch(`${getApiBase()}/suno/fetch/${clipId}`, {
       method: 'GET', headers: authHeaders(),
     })
     if (!res.ok) continue

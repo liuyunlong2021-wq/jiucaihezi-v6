@@ -9,7 +9,7 @@
  *   4. Pipeline 可视化 — 阶段进度条
  *   5. karpathy-wiki — 学习开关自动收集
  */
-import { ref, nextTick, watch, computed, onMounted } from 'vue'
+import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useChat } from '@/composables/useChat'
 import { useAgentStore, PILL_MODELS } from '@/stores/agentStore'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -18,6 +18,7 @@ import { useFileStore } from '@/composables/useFileStore'
 import MessageBubble from './MessageBubble.vue'
 import FileUploader from './FileUploader.vue'
 import ChatScrollNav from './ChatScrollNav.vue'
+import { onEvent } from '@/utils/eventBus'
 import AgentStatusBar from './AgentStatusBar.vue'
 import SkillPickerBar from './SkillPickerBar.vue'
 
@@ -38,6 +39,29 @@ const messagesContainer = ref<HTMLElement | null>(null)
 const showModelMenu = ref(false)
 const fileUploader = ref<InstanceType<typeof FileUploader> | null>(null)
 const scrollNav = ref<InstanceType<typeof ChatScrollNav> | null>(null)
+
+// ─── 引用文件芯片 ───
+interface RefFile {
+  name: string
+  content: string
+}
+const referenceFiles = ref<RefFile[]>([])
+
+// 监听文件树的引用事件
+const offReferenceFile = onEvent('reference-file', (payload: unknown) => {
+  const p = payload as RefFile
+  if (p?.name && p?.content) {
+    // 去重
+    if (!referenceFiles.value.some(f => f.name === p.name)) {
+      referenceFiles.value.push({ name: p.name, content: p.content })
+    }
+  }
+})
+onBeforeUnmount(offReferenceFile)
+
+function removeReference(index: number) {
+  referenceFiles.value.splice(index, 1)
+}
 
 // 输入历史回填 (V4 stepChatInputRecall 行 7714)
 const recallState = ref({ index: -1, draft: '' })
@@ -75,6 +99,16 @@ const headerStatus = computed(() => {
 // 当前 sessionId
 let currentSessionId = ''
 
+function persistCurrentSession() {
+  if (!currentSessionId || messages.value.length === 0) return
+  const messageSnapshot = messages.value.map(message => ({ ...message }))
+  sessionStore.saveSession(
+    currentSessionId,
+    agentStore.currentAgent?.id || '',
+    messageSnapshot,
+  )
+}
+
 // 自动滚动到底部
 watch(messages, () => {
   nextTick(() => {
@@ -94,7 +128,7 @@ watch(() => sessionStore.activeSessionId, async (newId) => {
   currentSessionId = newId
   const history = await sessionStore.loadSessionMessages(newId)
   loadMessages(history)
-})
+}, { immediate: true })
 
 /**
  * 构建 system prompt（Superpowers 完全体）
@@ -120,6 +154,10 @@ async function handleSend() {
 
   const text = inputText.value.trim() || (hasAttachments ? '请分析这些文件' : '')
   inputText.value = ''
+
+  // 收集引用文件
+  const refFiles = [...referenceFiles.value]
+  referenceFiles.value = []
 
   // 收集附件
   const attachedFiles = fileUploader.value?.attachedFiles || []
@@ -157,7 +195,12 @@ async function handleSend() {
     currentSessionId = sessionStore.startNewSession(agentStore.currentAgent?.id || '')
   }
 
-  // 3. 发送消息（使用 superpowers 完整 prompt + 附件）
+  // 3. 合并引用文件到 files
+  for (const rf of refFiles) {
+    files.push({ name: rf.name, content: rf.content })
+  }
+
+  // 4. 发送消息（使用 superpowers 完整 prompt + 附件）
   await sendMessage(text, {
     systemPrompt: buildSystemPrompt(),
     agentId: agentStore.currentAgent?.id,
@@ -175,11 +218,7 @@ async function handleSend() {
   }
 
   // 5. 保存到 IndexedDB
-  sessionStore.saveSession(
-    currentSessionId,
-    agentStore.currentAgent?.id || '',
-    messages.value,
-  )
+  persistCurrentSession()
 
   // 6. 整理模式：自动将对话存入知识库
   if (learningEnabled.value) {
@@ -215,7 +254,7 @@ async function handleConfirmChain() {
       processChainInvoke(lastMsg.content)
     }
     // 保存
-    sessionStore.saveSession(currentSessionId, nextSkill.id, messages.value)
+    persistCurrentSession()
   }
 }
 
@@ -255,6 +294,7 @@ function onKeydown(e: KeyboardEvent) {
 // 删除消息
 function deleteMessage(index: number) {
   messages.value.splice(index, 1)
+  persistCurrentSession()
 }
 
 // 重新发送
@@ -264,6 +304,7 @@ function retryMessage(index: number) {
     // 删除该消息及之后的所有消息
     messages.value.splice(index)
     inputText.value = msg.content
+    persistCurrentSession()
   }
 }
 
@@ -439,6 +480,17 @@ function onDrop(e: DragEvent) {
 
     <!-- 搭子快捷按钮栏 -->
     <SkillPickerBar />
+
+    <!-- 引用文件条 -->
+    <div v-if="referenceFiles.length > 0" class="cp-ref-bar">
+      <div v-for="(rf, i) in referenceFiles" :key="rf.name" class="cp-ref-chip">
+        <span class="mso" style="font-size:13px">attach_file</span>
+        <span class="cp-ref-name">{{ rf.name }}</span>
+        <button class="cp-ref-remove" @click="removeReference(i)">
+          <span class="mso" style="font-size:12px">close</span>
+        </button>
+      </div>
+    </div>
 
     <!-- 输入区 -->
     <div class="cp-input-area">
@@ -882,4 +934,39 @@ function onDrop(e: DragEvent) {
   background: var(--surface); color: var(--ink3); border: 1px solid var(--line);
 }
 .cp-chain-btn.reject:hover { border-color: var(--ink3); }
+
+/* ─── 引用文件条 ─── */
+.cp-ref-bar {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 6px 14px; border-top: 1px solid var(--line);
+  background: var(--surface-alt);
+  animation: ref-slide .2s ease;
+}
+@keyframes ref-slide {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.cp-ref-chip {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 8px 3px 6px; border-radius: 8px;
+  background: rgba(107,142,35,.1); border: 1px solid rgba(107,142,35,.2);
+  font-size: 11px; color: var(--olive-dark); font-weight: 600;
+  animation: ref-chip-in .15s ease;
+}
+@keyframes ref-chip-in {
+  from { transform: scale(.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+.cp-ref-name {
+  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cp-ref-remove {
+  width: 16px; height: 16px; border: none; background: none;
+  border-radius: 50%; cursor: pointer; display: flex;
+  align-items: center; justify-content: center;
+  color: var(--ink3); transition: all .12s;
+}
+.cp-ref-remove:hover {
+  background: rgba(200,0,0,.1); color: #c00;
+}
 </style>

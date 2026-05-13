@@ -7,7 +7,7 @@
  * ★ 生产逻辑全部保持不变 ★
  * 仅增强 UI: 画廊网格 + 卡片悬浮操作 + 灯箱 + 尺寸切换 + 加载动画
  */
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   RH_TASK_LABELS,
   RH_CREATION_MODELS,
@@ -38,6 +38,7 @@ import {
   saveCpState,
 } from '@/composables/useCreation'
 import { runCreation } from '@/composables/useCreationEngine'
+import { onEvent } from '@/utils/eventBus'
 
 // --- 新增 UI 组件 ---
 import GalleryCard from './GalleryCard.vue'
@@ -61,14 +62,39 @@ function onFileDrop(e: DragEvent) {
   if (e.dataTransfer?.files) addFiles(e.dataTransfer.files)
 }
 
+const fileObjectUrls = ref(new Map<File, string>())
+
+function cleanupFileObjectUrls(activeFiles: File[] = []) {
+  const active = new Set(activeFiles)
+  for (const [file, url] of fileObjectUrls.value.entries()) {
+    if (!active.has(file)) {
+      URL.revokeObjectURL(url)
+      fileObjectUrls.value.delete(file)
+    }
+  }
+}
+
+watch(() => [...cpState.files], files => cleanupFileObjectUrls(files), { deep: false })
+onBeforeUnmount(() => cleanupFileObjectUrls())
+
 const fileThumbs = computed(() =>
-  cpState.files.map((f, i) => ({
-    index: i,
-    name: f.name,
-    url: f.type.startsWith('image/') ? URL.createObjectURL(f) : '',
-    isVideo: f.type.startsWith('video/'),
-    isAudio: f.type.startsWith('audio/'),
-  }))
+  cpState.files.map((f, i) => {
+    let url = ''
+    if (f.type.startsWith('image/')) {
+      url = fileObjectUrls.value.get(f) || ''
+      if (!url) {
+        url = URL.createObjectURL(f)
+        fileObjectUrls.value.set(f, url)
+      }
+    }
+    return {
+      index: i,
+      name: f.name,
+      url,
+      isVideo: f.type.startsWith('video/'),
+      isAudio: f.type.startsWith('audio/'),
+    }
+  })
 )
 
 const tasks = computed(() =>
@@ -160,6 +186,21 @@ function autoGrow(e: Event) {
 const canSend = computed(() =>
   !!cpState.prompt?.trim() || cpState.files.length > 0
 )
+
+const offImportToCreation = onEvent('import-to-creation', async (payload: any) => {
+  try {
+    const res = await fetch(payload.url)
+    const blob = await res.blob()
+    let mime = 'image/png'
+    if (payload.type === 'video') mime = 'video/mp4'
+    else if (payload.type === 'audio') mime = 'audio/mpeg'
+    const file = new File([blob], payload.name, { type: mime })
+    addFiles([file])
+  } catch (e) {
+    console.error('Import failed', e)
+  }
+})
+onBeforeUnmount(offImportToCreation)
 </script>
 
 <template>

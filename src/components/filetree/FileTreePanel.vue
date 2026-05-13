@@ -39,6 +39,7 @@ onMounted(loadTab)
 
 function switchTab(tab: Tab) {
   activeTab.value = tab
+  currentFolder.value = null
   loadTab()
 }
 
@@ -51,7 +52,7 @@ const filteredItems = computed(() => {
 function toggleSelectAll() {
   selectAll.value = !selectAll.value
   if (selectAll.value) {
-    selectedIds.value = new Set(filteredItems.value.map(f => f.id))
+    selectedIds.value = new Set(displayFiles.value.map(f => f.id))
   } else {
     selectedIds.value.clear()
   }
@@ -100,11 +101,15 @@ function openContextMenu(e: MouseEvent, file: FileEntry) {
 }
 function closeContextMenu() { contextMenu.value.show = false }
 
-function renameFile() {
+async function renameFile() {
   const f = contextMenu.value.file; closeContextMenu()
   if (!f) return
   const newName = prompt('重命名', f.name)
-  if (newName && newName !== f.name) { fileStore.updateFile(f.id, { name: newName }); loadTab() }
+  if (newName && newName !== f.name) {
+    await fileStore.updateFile(f.id, { name: newName })
+    emitEvent('file-renamed', { oldName: f.name, newName })
+    await loadTab()
+  }
 }
 function referenceFile() {
   const f = contextMenu.value.file; closeContextMenu()
@@ -116,14 +121,24 @@ function openInEditor() {
   emitEvent('open-in-editor', { name: f.name, content: f.content })
   emitEvent('switch-panel', 'editor')
 }
-function deleteFile() {
+async function deleteFile() {
   const f = contextMenu.value.file; closeContextMenu()
-  if (f) { fileStore.deleteFile(f.id); loadTab() }
+  if (f) { await fileStore.deleteFile(f.id); await loadTab() }
 }
 
 async function knowledgeBackup() {
   const entries = await fileStore.loadByCategory('knowledge')
   const blob = new Blob([JSON.stringify(entries, null, 2)], { type: 'application/json' })
+  // 优先使用 File System Access API 让用户选目录
+  if ('showSaveFilePicker' in window) {
+    try {
+      const handle = await (window as any).showSaveFilePicker({ suggestedName: `知识库备份_${new Date().toLocaleDateString('zh-CN')}.json`, types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }] })
+      const writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+      return
+    } catch { /* 用户取消或不支持，走 fallback */ }
+  }
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url; a.download = `知识库备份_${new Date().toLocaleDateString('zh-CN')}.json`
@@ -140,22 +155,27 @@ async function knowledgeMerge(e: Event) {
   try {
     const text = await file.text()
     const entries = JSON.parse(text) as FileEntry[]
-    for (const entry of entries) {
-      if (entry.category === 'knowledge') await fileStore.addKnowledge({ name: entry.name, content: entry.content, topic: entry.topic, skillId: entry.skillId, indexed: entry.indexed })
+    // 结构验证：必须是数组且每项有 category=knowledge
+    if (!Array.isArray(entries) || entries.length === 0) { alert('文件内容为空或格式不正确'); return }
+    const valid = entries.filter(e => e.category === 'knowledge' && e.name && e.content)
+    if (valid.length === 0) { alert('文件结构不匹配：未找到知识库条目（需要 category="knowledge"）'); return }
+    for (const entry of valid) {
+      await fileStore.addKnowledge({ name: entry.name, content: entry.content, topic: entry.topic, skillId: entry.skillId, indexed: entry.indexed })
     }
+    alert(`成功合并 ${valid.length} 条知识`)
     await loadTab()
-  } catch { alert('文件格式不正确') }
+  } catch { alert('文件格式不正确，请选择相同结构的知识库备份文件') }
   input.value = ''
 }
 
 // ─── 合并所选（合并为文件夹） ───
 async function mergeSelected() {
   if (selectedIds.value.size < 2) return
+  if (activeTab.value === 'knowledge' || activeTab.value === 'skill') return
   const folderName = prompt('文件夹名称', '新文件夹')
   if (!folderName) return
-  const folderId = `folder_${Date.now().toString(36)}`
   // 创建文件夹记录
-  await fileStore.addFile({
+  const folder = await fileStore.addFile({
     category: activeTab.value as FileEntry['category'],
     name: folderName,
     content: '',
@@ -165,7 +185,7 @@ async function mergeSelected() {
   })
   // 将选中文件标记为属于该文件夹
   for (const id of selectedIds.value) {
-    await fileStore.updateFile(id, { folderId })
+    await fileStore.updateFile(id, { folderId: folder.id })
   }
   selectedIds.value.clear()
   selectAll.value = false
@@ -218,6 +238,62 @@ async function handleSkillUpload(e: Event) {
   input.value = ''
 }
 
+// ─── 搭子右键菜单 ───
+const skillMenu = ref({ show: false, x: 0, y: 0, skill: null as any })
+function openSkillMenu(e: MouseEvent, skill: any) {
+  e.preventDefault()
+  skillMenu.value = { show: true, x: e.clientX, y: e.clientY, skill }
+}
+function closeSkillMenu() { skillMenu.value.show = false }
+function renameSkill() {
+  const s = skillMenu.value.skill; closeSkillMenu()
+  if (!s) return
+  const newName = prompt('重命名搭子', s.name)
+  if (newName && newName !== s.name) agentStore.updateSkill(s.id, { name: newName })
+}
+function referenceSkill() {
+  const s = skillMenu.value.skill; closeSkillMenu()
+  if (s) emitEvent('reference-file', { name: s.name, content: s.skillContent || s.description })
+}
+function openSkillInEditor() {
+  const s = skillMenu.value.skill; closeSkillMenu()
+  if (!s) return
+  emitEvent('open-in-editor', { name: s.name, content: s.skillContent || '' })
+  emitEvent('switch-panel', 'editor')
+}
+function deleteSkill() {
+  const s = skillMenu.value.skill; closeSkillMenu()
+  if (!s) return
+  if (!confirm(`确定删除搭子「${s.name}」？`)) return
+  agentStore.deleteAgent(s.id)
+}
+
+// ─── 搭子单文件上传 ───
+async function handleSkillTextUpload(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (!input.files?.[0]) return
+  const file = input.files[0]
+  const text = await file.text()
+  if (!text.includes('name:') && !text.match(/^---/)) {
+    alert('文件不是有效的 SKILL.md 格式'); return
+  }
+  const parsed = parseSkillMd(text)
+  if (!parsed.name && !parsed.skillContent) { alert('无法解析 SKILL.md'); return }
+  const skill = {
+    id: 'upload_' + Date.now().toString(36),
+    name: parsed.name || '导入搭子',
+    description: parsed.description || '',
+    oneLineDesc: parsed.description || '',
+    triggers: parsed.triggers || [],
+    skillContent: parsed.skillContent || text,
+    references: [], examples: [], version: 1,
+    source: 'user' as const, createdAt: Date.now(), updatedAt: Date.now(), evolutionLog: [],
+  }
+  agentStore.createAgent(skill)
+  agentStore.moveToMy(skill.id)
+  input.value = ''
+}
+
 // ─── 图片/视频导入创作面板 ───
 function importToCreation() {
   const f = contextMenu.value.file; closeContextMenu()
@@ -238,16 +314,17 @@ function exitFolder() {
   currentFolder.value = null
 }
 
-function deleteFolderItem() {
+async function deleteFolderItem() {
   const f = contextMenu.value.file; closeContextMenu()
   if (!f) return
   if (f.mimeType === 'folder') {
     if (!confirm(`确定删除文件夹「${f.name}」及其所有内容？`)) return
     const children = (f.metadata?.children as string[]) || []
-    for (const cid of children) { fileStore.deleteFile(cid) }
+    for (const cid of children) { await fileStore.deleteFile(cid) }
   }
-  fileStore.deleteFile(f.id)
-  loadTab()
+  await fileStore.deleteFile(f.id)
+  if (currentFolder.value?.id === f.id) currentFolder.value = null
+  await loadTab()
 }
 
 // 过滤：排除已在文件夹中的文件（除非正在查看文件夹）
@@ -261,7 +338,12 @@ const displayItems = computed(() => {
 
 // 文件夹列表
 const folders = computed(() => {
-  return items.value.filter(f => f.mimeType === 'folder')
+  if (currentFolder.value) return []
+  return filteredItems.value.filter(f => f.mimeType === 'folder')
+})
+
+const displayFiles = computed(() => {
+  return displayItems.value.filter(f => f.mimeType !== 'folder')
 })
 </script>
 
@@ -271,6 +353,9 @@ const folders = computed(() => {
       <button v-for="t in tabItems" :key="t.key" class="fp-tab" :class="{ active: activeTab === t.key }" @click="switchTab(t.key as Tab)">
         <span class="mso" style="font-size:14px">{{ t.icon }}</span>
         <span>{{ t.label }}</span>
+      </button>
+      <button class="fp-tab" style="margin-left: auto; padding: 5px 8px" @click="emitEvent('toggle-file-tree')" title="收起文件面板">
+        <span class="mso">keyboard_double_arrow_left</span>
       </button>
     </div>
 
@@ -297,10 +382,14 @@ const folders = computed(() => {
       <div class="fp-toolbar">
         <div class="fp-search"><span class="mso" style="font-size:14px">search</span><input v-model="searchQuery" placeholder="搜索..." /></div>
         <button class="fp-tool-btn" :class="{ active: selectAll }" @click="toggleSelectAll" title="全选"><span class="mso">select_all</span></button>
-        <button class="fp-tool-btn" :disabled="selectedIds.size === 0" @click="deleteSelected" title="删除所选"><span class="mso">delete</span></button>
-        <button v-if="(activeTab as string) !== 'knowledge'" class="fp-tool-btn" :disabled="selectedIds.size < 2" @click="mergeSelected" title="合并所选"><span class="mso">create_new_folder</span></button>
+        <button class="fp-tool-btn" :disabled="!selectAll || selectedIds.size === 0" @click="deleteSelected" title="删除所选"><span class="mso">delete</span></button>
+        <button v-if="activeTab === 'text' || activeTab === 'image' || activeTab === 'video'" class="fp-tool-btn" :disabled="!selectAll || selectedIds.size < 2" @click="mergeSelected" title="合并所选"><span class="mso">create_new_folder</span></button>
+        <label v-if="activeTab === 'skill'" class="fp-tool-btn" title="上传搭子单文件">
+          <span class="mso">upload_file</span>
+          <input type="file" accept=".md" @change="handleSkillTextUpload" hidden />
+        </label>
         <label v-if="activeTab === 'skill'" class="fp-tool-btn" title="上传搭子文件夹">
-          <span class="mso">upload</span>
+          <span class="mso">drive_folder_upload</span>
           <input type="file" multiple webkitdirectory @change="handleSkillUpload" hidden />
         </label>
         <label v-else-if="(activeTab as string) !== 'skill'" class="fp-tool-btn" title="上传">
@@ -318,8 +407,9 @@ const folders = computed(() => {
       <div class="fp-list">
         <!-- 搭子 tab -->
         <template v-if="activeTab === 'skill'">
-          <div v-for="s in agentStore.getMySkills()" :key="s.id" class="fp-item skill">
-            <span class="mso" style="font-size:16px;color:var(--olive)">folder</span>
+          <div v-for="s in agentStore.getMySkills()" :key="s.id" class="fp-item skill"
+               @contextmenu="openSkillMenu($event, s)">
+            <span class="mso" style="font-size:16px;color:var(--olive)">smart_toy</span>
             <span class="fp-item-name">{{ s.name }}</span>
             <span class="fp-item-meta">{{ s.triggers?.slice(0,2).join(', ') }}</span>
           </div>
@@ -328,8 +418,13 @@ const folders = computed(() => {
 
         <!-- 图片/视频 tab -->
         <template v-else-if="activeTab === 'image' || activeTab === 'video'">
+          <div v-for="f in folders" :key="f.id" class="fp-item folder" @dblclick="openFolder(f)" @contextmenu="openContextMenu($event, f)">
+            <span class="mso" style="font-size:16px;color:#ff9800">folder</span>
+            <span class="fp-item-name">{{ f.name }}</span>
+            <span class="fp-item-meta">{{ ((f.metadata?.children as string[]) || []).length }} 个文件</span>
+          </div>
           <div class="fp-media-grid">
-            <div v-for="f in displayItems" :key="f.id" class="fp-media-item"
+            <div v-for="f in displayFiles" :key="f.id" class="fp-media-item"
                  :class="{ selected: selectedIds.has(f.id) }"
                  @click="selectAll ? toggleItem(f.id) : null"
                  @contextmenu="openContextMenu($event, f)">
@@ -338,7 +433,7 @@ const folders = computed(() => {
               <span class="fp-media-name">{{ f.name }}</span>
             </div>
           </div>
-          <div v-if="displayItems.length === 0" class="fp-empty">暂无{{ activeTab === 'image' ? '图片' : '视频' }}</div>
+          <div v-if="displayFiles.length === 0 && folders.length === 0" class="fp-empty">暂无{{ activeTab === 'image' ? '图片' : '视频' }}</div>
         </template>
 
         <!-- 文本 tab -->
@@ -350,7 +445,7 @@ const folders = computed(() => {
             <span class="fp-item-meta">{{ ((f.metadata?.children as string[]) || []).length }} 个文件</span>
           </div>
           <!-- 文件 -->
-          <div v-for="f in displayItems.filter(i => i.mimeType !== 'folder')" :key="f.id" class="fp-item"
+          <div v-for="f in displayFiles" :key="f.id" class="fp-item"
                :class="{ selected: selectedIds.has(f.id) }"
                @click="selectAll ? toggleItem(f.id) : null"
                @contextmenu="openContextMenu($event, f)">
@@ -359,7 +454,7 @@ const folders = computed(() => {
             <span class="fp-item-name">{{ f.name }}</span>
             <span class="fp-item-meta">{{ new Date(f.updatedAt).toLocaleDateString('zh-CN') }}</span>
           </div>
-          <div v-if="displayItems.length === 0 && folders.length === 0" class="fp-empty">暂无文本文件</div>
+          <div v-if="displayFiles.length === 0 && folders.length === 0" class="fp-empty">暂无文本文件</div>
         </template>
       </div>
     </template>
@@ -388,6 +483,18 @@ const folders = computed(() => {
             <button class="fp-ctx-item" @click="openInEditor"><span class="mso">edit_note</span> 在编辑区打开</button>
             <button class="fp-ctx-item danger" @click="deleteFile"><span class="mso">delete</span> 删除</button>
           </template>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 搭子专属右键菜单 -->
+    <Teleport to="body">
+      <div v-if="skillMenu.show" class="fp-ctx-overlay" @click="closeSkillMenu">
+        <div class="fp-ctx-menu" :style="{ top: skillMenu.y + 'px', left: skillMenu.x + 'px' }">
+          <button class="fp-ctx-item" @click="renameSkill"><span class="mso">edit</span> 重命名</button>
+          <button class="fp-ctx-item" @click="referenceSkill"><span class="mso">link</span> 引用</button>
+          <button class="fp-ctx-item" @click="openSkillInEditor"><span class="mso">edit_note</span> 在编辑区打开</button>
+          <button class="fp-ctx-item danger" @click="deleteSkill"><span class="mso">delete</span> 删除</button>
         </div>
       </div>
     </Teleport>
@@ -427,8 +534,8 @@ const folders = computed(() => {
 .fp-kb-btn:hover { border-color: var(--olive); color: var(--olive); }
 .fp-kb-btn.danger:hover { border-color: #e53935; color: #e53935; }
 .fp-kb-btn .mso { font-size: 15px; }
-.fp-ctx-overlay { position: fixed; inset: 0; z-index: 9999; }
-.fp-ctx-menu { position: fixed; min-width: 140px; padding: 6px; background: var(--paper); border: 2px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.15); }
+.fp-ctx-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.1); }
+.fp-ctx-menu { position: fixed; min-width: 160px; padding: 8px; background: #fff; border: 2px solid #ddd; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.25); z-index: 10000; }
 .fp-ctx-item { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 10px; border: none; border-radius: 6px; background: transparent; color: var(--ink1); font-size: 12px; cursor: pointer; font-family: inherit; }
 .fp-ctx-item:hover { background: var(--surface); }
 .fp-ctx-item.danger:hover { color: #e53935; }

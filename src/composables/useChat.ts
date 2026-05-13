@@ -192,7 +192,7 @@ async function readSSEStream(
               }
               const entry = toolCallAccum.get(idx)!
               if (tc.id) entry.id = tc.id
-              if (tc.function?.name) entry.name += tc.function.name
+              if (tc.function?.name) entry.name = tc.function.name
               if (tc.function?.arguments) entry.args += tc.function.arguments
             }
             onToolCallDelta(buildToolCalls(toolCallAccum))

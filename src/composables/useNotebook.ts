@@ -133,9 +133,14 @@ const wordCount = computed(() => {
 
 const isEmpty = computed(() => blocks.value.length === 0)
 
+let _loaded = false
+
 export function useNotebook() {
-  // 初始化加载
-  if (blocks.value.length === 0) load()
+  // BUG-6 修复: 用 flag 防止多组件同时 mount 时重复加载
+  if (!_loaded) {
+    _loaded = true
+    load()
+  }
 
   return {
     blocks,

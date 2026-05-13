@@ -21,6 +21,8 @@ export interface Session {
   messageCount: number
 }
 
+const IMAGE_REF_PREFIX = 'jc-doc://'
+
 export const useSessionStore = defineStore('sessions', () => {
   const sessions = ref<Session[]>([])
   // 从 localStorage 恢复上次的 activeSessionId
@@ -71,17 +73,35 @@ export const useSessionStore = defineStore('sessions', () => {
     }
     await idb.setRecord('conversations', convRecord)
 
-    // 保存消息（清理 base64 图片防止 IndexedDB 膨胀）
-    const cleanMessages = messages.map(m => {
+    // 保存消息（base64 图片单独转存到 documents，避免消息记录无限膨胀）
+    const cleanMessages = await Promise.all(messages.map(async (m) => {
       const cleaned = { ...m }
-      // 移除 base64 图片，保留 URL 图片引用
       if (cleaned.images?.length) {
-        cleaned.images = cleaned.images.map(img =>
-          img.startsWith('data:') ? '' : img
-        ).filter(Boolean)
+        cleaned.images = await Promise.all(cleaned.images.map(async (img, index) => {
+          if (!img.startsWith('data:')) return img
+          const imageId = `chat_image_${sessionId}_${cleaned.id}_${index}`
+          try {
+            const existing = await idb.getRecord('documents', imageId)
+            await idb.setRecord('documents', {
+              ...(existing || {}),
+              id: imageId,
+              category: 'image',
+              name: `聊天图片_${index + 1}`,
+              content: img,
+              mimeType: img.match(/^data:([^;]+);/)?.[1] || 'image/png',
+              size: img.length,
+              createdAt: existing?.createdAt || now,
+              updatedAt: now,
+              metadata: { kind: 'chat-image', sessionId, messageId: cleaned.id, imageIndex: index },
+            })
+            return `${IMAGE_REF_PREFIX}${imageId}`
+          } catch {
+            return img
+          }
+        }))
       }
       return cleaned
-    })
+    }))
     const msgRecord = {
       id: sessionId,
       conversationId: sessionId,
@@ -111,7 +131,18 @@ export const useSessionStore = defineStore('sessions', () => {
   async function loadSessionMessages(sessionId: string): Promise<ChatMessage[]> {
     const record = await idb.getRecord('messages', sessionId)
     if (record && Array.isArray(record.items)) {
-      return record.items
+      return await Promise.all(record.items.map(async (m: ChatMessage) => {
+        if (!m.images?.length) return m
+        const restored = { ...m }
+        restored.images = await Promise.all(m.images.map(async (img) => {
+          if (!img.startsWith(IMAGE_REF_PREFIX)) return img
+          const imageId = img.slice(IMAGE_REF_PREFIX.length)
+          const file = await idb.getRecord('documents', imageId)
+          return file?.content || ''
+        }))
+        restored.images = restored.images.filter(Boolean)
+        return restored
+      }))
     }
     return []
   }
@@ -150,11 +181,28 @@ export const useSessionStore = defineStore('sessions', () => {
   async function deleteSession(sessionId: string) {
     await idb.removeRecord('conversations', sessionId)
     await idb.removeRecord('messages', sessionId)
+    const docs = await idb.getAll('documents')
+    const chatImages = docs.filter((d: any) => d?.metadata?.kind === 'chat-image' && d.metadata.sessionId === sessionId)
+    for (const doc of chatImages) {
+      await idb.removeRecord('documents', doc.id)
+    }
     sessions.value = sessions.value.filter(s => s.id !== sessionId)
     if (activeSessionId.value === sessionId) {
       activeSessionId.value = ''
       localStorage.removeItem('jc_active_session')
     }
+  }
+
+  // ─── 重命名对话 ───
+  async function renameSession(sessionId: string, newTitle: string) {
+    const record = await idb.getRecord('conversations', sessionId) as any
+    if (record) {
+      record.title = newTitle
+      record.updatedAt = Date.now()
+      await idb.setRecord('conversations', record)
+    }
+    const idx = sessions.value.findIndex(s => s.id === sessionId)
+    if (idx !== -1) sessions.value[idx].title = newTitle
   }
 
   return {
@@ -168,5 +216,6 @@ export const useSessionStore = defineStore('sessions', () => {
     startNewSession,
     switchSession,
     deleteSession,
+    renameSession,
   }
 })

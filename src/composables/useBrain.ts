@@ -63,29 +63,69 @@ function loadRaw(): BrainRawEntry[] {
   try { return JSON.parse(localStorage.getItem(RAW_KEY) || '[]') } catch { return [] }
 }
 function saveRaw(entries: BrainRawEntry[]) {
-  localStorage.setItem(RAW_KEY, JSON.stringify(entries))
-  rawEntries.value = entries
+  try {
+    const json = JSON.stringify(entries)
+    // BUG-3 修复: 检查大小，超过 4MB 时截断旧数据而非静默丢失
+    if (json.length > 4 * 1024 * 1024) {
+      // 保留最新 50%，丢弃最旧的
+      const half = Math.floor(entries.length / 2)
+      const trimmed = entries.slice(half)
+      localStorage.setItem(RAW_KEY, JSON.stringify(trimmed))
+      rawEntries.value = trimmed
+      console.warn(`[Brain] raw entries 超限，已截断 ${half} 条旧数据`)
+      return
+    }
+    localStorage.setItem(RAW_KEY, json)
+    rawEntries.value = entries
+  } catch (e) {
+    console.error('[Brain] 保存 raw 失败，可能存储已满:', e)
+  }
 }
 function loadWiki(): BrainWikiPage[] {
   try { return JSON.parse(localStorage.getItem(WIKI_KEY) || '[]') } catch { return [] }
 }
 function saveWiki(pages: BrainWikiPage[]) {
-  localStorage.setItem(WIKI_KEY, JSON.stringify(pages))
-  wikiPages.value = pages
+  try {
+    const json = JSON.stringify(pages)
+    if (json.length > 4 * 1024 * 1024) {
+      // 归档最旧的页面
+      const sorted = [...pages].sort((a, b) => a.updatedAt - b.updatedAt)
+      const half = Math.floor(sorted.length / 2)
+      for (let i = 0; i < half; i++) sorted[i].archived = true
+      localStorage.setItem(WIKI_KEY, JSON.stringify(sorted))
+      wikiPages.value = sorted
+      console.warn(`[Brain] wiki pages 超限，已归档 ${half} 个旧页面`)
+      return
+    }
+    localStorage.setItem(WIKI_KEY, json)
+    wikiPages.value = pages
+  } catch (e) {
+    console.error('[Brain] 保存 wiki 失败，可能存储已满:', e)
+  }
 }
 function loadIndex(): WikiIndexEntry[] {
   try { return JSON.parse(localStorage.getItem(INDEX_KEY) || '[]') } catch { return [] }
 }
 function saveIndex(entries: WikiIndexEntry[]) {
-  localStorage.setItem(INDEX_KEY, JSON.stringify(entries))
-  wikiIndex.value = entries
+  try {
+    localStorage.setItem(INDEX_KEY, JSON.stringify(entries))
+    wikiIndex.value = entries
+  } catch (e) {
+    console.error('[Brain] 保存 index 失败:', e)
+  }
 }
 function loadLog(): WikiLogEntry[] {
   try { return JSON.parse(localStorage.getItem(LOG_KEY) || '[]') } catch { return [] }
 }
 function saveLog(entries: WikiLogEntry[]) {
-  localStorage.setItem(LOG_KEY, JSON.stringify(entries))
-  wikiLog.value = entries
+  try {
+    // log 只保留最新 200 条
+    const trimmed = entries.length > 200 ? entries.slice(-200) : entries
+    localStorage.setItem(LOG_KEY, JSON.stringify(trimmed))
+    wikiLog.value = trimmed
+  } catch (e) {
+    console.error('[Brain] 保存 log 失败:', e)
+  }
 }
 
 function uid(prefix: string) {

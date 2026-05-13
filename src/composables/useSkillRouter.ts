@@ -102,7 +102,65 @@ export function buildSuperpowersPrompt(
 }
 
 /**
+ * 本地关键词快速匹配（避免每条消息都调 LLM，解决 503 问题）
+ */
+function fastMatchTriggers(
+  userMessage: string,
+  allSkills: SkillConfig[]
+): RouteResult | null {
+  const msg = userMessage.toLowerCase()
+  const scored: { skillId: string; score: number; reason: string }[] = []
+
+  for (const skill of allSkills) {
+    let score = 0
+    let matchedTrigger = ''
+    for (const trigger of skill.triggers) {
+      const t = trigger.toLowerCase()
+      if (msg.includes(t)) {
+        // 更长的 trigger 权重更高
+        const s = t.length * 2
+        if (s > score) {
+          score = s
+          matchedTrigger = trigger
+        }
+      }
+    }
+    // 也匹配 skill 名字
+    if (msg.includes(skill.name.toLowerCase())) {
+      const s = skill.name.length * 2
+      if (s > score) {
+        score = s
+        matchedTrigger = skill.name
+      }
+    }
+    if (score > 0) {
+      scored.push({ skillId: skill.id, score, reason: `关键词匹配: "${matchedTrigger}"` })
+    }
+  }
+
+  if (scored.length === 0) return null
+
+  // 按分数排序
+  scored.sort((a, b) => b.score - a.score)
+
+  if (scored.length === 1 || scored[0].score > scored[1].score * 1.5) {
+    // 明确匹配单个 skill
+    return {
+      matched: [{ skillId: scored[0].skillId, reason: scored[0].reason }],
+      strategy: 'single',
+    }
+  }
+
+  // 多个同等匹配 → chain
+  return {
+    matched: scored.slice(0, 3).map(s => ({ skillId: s.skillId, reason: s.reason })),
+    strategy: scored.length > 1 ? 'chain' : 'single',
+  }
+}
+
+/**
  * 执行路由分析
+ * 优先本地关键词匹配，匹配不到才走 LLM（避免 503 浪费）
  */
 export async function routeMessage(
   userMessage: string,
@@ -115,7 +173,22 @@ export async function routeMessage(
   isRouting.value = true
 
   try {
-    const config = await resolveApiConfig()
+    // ★ 先尝试本地关键词快速匹配（不调 API，0ms）
+    const fastResult = fastMatchTriggers(userMessage, allSkills)
+    if (fastResult) {
+      lastRouteResult.value = fastResult
+      applyRouteResult(fastResult, allSkills)
+      return fastResult
+    }
+
+    // 本地未匹配 → 走 LLM 语义路由
+    let config
+    try {
+      config = await resolveApiConfig()
+    } catch {
+      // API Key 未配置时不走 LLM 路由
+      return { matched: [], strategy: 'none' }
+    }
     const routerPrompt = buildRouterPrompt(allSkills)
 
     const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
@@ -134,7 +207,7 @@ export async function routeMessage(
     })
 
     if (!res.ok) {
-      console.warn('[SkillRouter] API error:', res.status)
+      // 503/429 等错误时静默降级，不再打印 console.warn 刷屏
       return { matched: [], strategy: 'none' }
     }
 
@@ -145,42 +218,44 @@ export async function routeMessage(
     if (jsonMatch) {
       const result: RouteResult = JSON.parse(jsonMatch[0])
       lastRouteResult.value = result
-
-      // 生成通知 + 激活 pipeline
-      if (result.strategy === 'single' && result.matched.length > 0) {
-        const skill = allSkills.find(s => s.id === result.matched[0].skillId)
-        routeNotification.value = `🔀 已切换 → ${skill?.name || result.matched[0].skillId}`
-
-        // 如果匹配到 superpowers skill，激活 pipeline
-        const meta = getSkillPhase(result.matched[0].skillId)
-        if (meta) {
-          activatePipeline(result.matched[0].skillId, meta)
-        }
-      } else if (result.strategy === 'chain' && result.matched.length > 1) {
-        const names = result.matched.map(m => {
-          const s = allSkills.find(sk => sk.id === m.skillId)
-          return s?.name || m.skillId
-        })
-        routeNotification.value = `🔗 协作链 → ${names.join(' → ')}`
-
-        // 激活第一个 skill
-        const firstMeta = getSkillPhase(result.matched[0].skillId)
-        if (firstMeta) {
-          activatePipeline(result.matched[0].skillId, firstMeta)
-        }
-      } else {
-        routeNotification.value = ''
-      }
-
+      applyRouteResult(result, allSkills)
       return result
     }
 
     return { matched: [], strategy: 'none' }
-  } catch (e) {
-    console.warn('[SkillRouter] Route error:', e)
+  } catch {
+    // 网络错误静默降级
     return { matched: [], strategy: 'none' }
   } finally {
     isRouting.value = false
+  }
+}
+
+/**
+ * 应用路由结果（通知 + pipeline 激活）
+ */
+function applyRouteResult(result: RouteResult, allSkills: SkillConfig[]) {
+  if (result.strategy === 'single' && result.matched.length > 0) {
+    const skill = allSkills.find(s => s.id === result.matched[0].skillId)
+    routeNotification.value = `🔀 已切换 → ${skill?.name || result.matched[0].skillId}`
+
+    const meta = getSkillPhase(result.matched[0].skillId)
+    if (meta) {
+      activatePipeline(result.matched[0].skillId, meta)
+    }
+  } else if (result.strategy === 'chain' && result.matched.length > 1) {
+    const names = result.matched.map(m => {
+      const s = allSkills.find(sk => sk.id === m.skillId)
+      return s?.name || m.skillId
+    })
+    routeNotification.value = `🔗 协作链 → ${names.join(' → ')}`
+
+    const firstMeta = getSkillPhase(result.matched[0].skillId)
+    if (firstMeta) {
+      activatePipeline(result.matched[0].skillId, firstMeta)
+    }
+  } else {
+    routeNotification.value = ''
   }
 }
 

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 /**
  * HistoryPanel — 对话记录面板 (Col 3)
- * 源自 code.html #history-col (行 1068-1075)
  */
 import { onMounted, computed, ref } from 'vue'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -10,6 +9,7 @@ import { useAgentStore } from '@/stores/agentStore'
 const sessionStore = useSessionStore()
 const agentStore = useAgentStore()
 const searchQuery = ref('')
+const ctxMenu = ref({ show: false, x: 0, y: 0, sessionId: '', title: '' })
 
 const filteredSessions = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
@@ -33,6 +33,25 @@ function newChat() {
 onMounted(() => {
   sessionStore.loadAllSessions()
 })
+
+function openCtxMenu(e: MouseEvent, s: any) {
+  e.preventDefault()
+  ctxMenu.value = { show: true, x: e.clientX, y: e.clientY, sessionId: s.id, title: s.title || '' }
+}
+function closeCtxMenu() { ctxMenu.value.show = false }
+
+function renameSession() {
+  const newTitle = prompt('重命名对话', ctxMenu.value.title)
+  closeCtxMenu()
+  if (newTitle && newTitle !== ctxMenu.value.title) {
+    sessionStore.renameSession(ctxMenu.value.sessionId, newTitle)
+  }
+}
+function deleteSession() {
+  closeCtxMenu()
+  if (!confirm('确定删除这条对话记录？')) return
+  sessionStore.deleteSession(ctxMenu.value.sessionId)
+}
 </script>
 
 <template>
@@ -58,6 +77,7 @@ onMounted(() => {
         :key="s.id"
         class="hp-item"
         @click="openSession(s.id)"
+        @contextmenu="openCtxMenu($event, s)"
       >
         <span class="mso hp-item-icon">chat_bubble</span>
         <div class="hp-item-body">
@@ -70,6 +90,16 @@ onMounted(() => {
         <p>暂无对话记录</p>
       </div>
     </div>
+
+    <!-- 右键菜单 -->
+    <Teleport to="body">
+      <div v-if="ctxMenu.show" class="hp-ctx-overlay" @click="closeCtxMenu">
+        <div class="hp-ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
+          <button class="hp-ctx-item" @click="renameSession"><span class="mso">edit</span> 重命名</button>
+          <button class="hp-ctx-item danger" @click="deleteSession"><span class="mso">delete</span> 删除</button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -124,4 +154,11 @@ onMounted(() => {
   justify-content: center; gap: 8px; height: 200px; color: var(--ink3);
 }
 .hp-empty p { font-size: 12px; }
+/* 右键菜单 */
+.hp-ctx-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.1); }
+.hp-ctx-menu { position: fixed; min-width: 140px; padding: 6px; background: #fff; border: 2px solid #ddd; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); z-index: 10000; }
+.hp-ctx-item { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 12px; border: none; border-radius: 6px; background: transparent; color: var(--ink1); font-size: 12px; cursor: pointer; font-family: inherit; }
+.hp-ctx-item:hover { background: #f5f5f5; }
+.hp-ctx-item.danger:hover { color: #e53935; }
+.hp-ctx-item .mso { font-size: 16px; color: var(--ink2); }
 </style>

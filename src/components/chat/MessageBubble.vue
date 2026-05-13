@@ -10,9 +10,11 @@
  */
 import { computed, ref } from 'vue'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import ToolCallCard from './ToolCallCard.vue'
 import type { ToolCall } from '@/composables/useChat'
 import { useNotebook } from '@/composables/useNotebook'
+import { useFileStore } from '@/composables/useFileStore'
 import { emitEvent } from '@/utils/eventBus'
 
 const props = defineProps<{
@@ -33,26 +35,48 @@ const emit = defineEmits<{
 
 const copyLabel = ref('content_copy')
 
+function sanitizeHtml(html: string): string {
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    ADD_ATTR: ['target', 'rel'],
+  })
+}
+
 // Markdown 渲染
 const renderedHtml = computed(() => {
   if (!props.content) return ''
   if (props.role === 'user') {
-    return props.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+    return sanitizeHtml(props.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'))
   }
   try {
     const html = marked.parse(props.content, { breaks: true, gfm: true }) as string
     // 给代码块注入复制按钮
-    return html.replace(
+    return sanitizeHtml(html.replace(
       /<pre><code(?: class="language-(\w+)")?>/g,
       (_match, lang) => {
         const langLabel = lang || 'code'
-        return `<div class="md-code"><div class="md-code-head"><span class="md-code-lang">${langLabel}</span><button class="md-code-copy" onclick="this.closest('.md-code').querySelector('code')&&navigator.clipboard.writeText(this.closest('.md-code').querySelector('code').textContent).then(()=>{this.textContent='已复制 ✓';this.classList.add('copied');setTimeout(()=>{this.textContent='复制';this.classList.remove('copied')},1200)})">复制</button></div><pre><code class="language-${langLabel}">`
+        return `<div class="md-code"><div class="md-code-head"><span class="md-code-lang">${langLabel}</span><button class="md-code-copy" type="button" data-code-copy="1">复制</button></div><pre><code class="language-${langLabel}">`
       }
-    ).replace(/<\/code><\/pre>/g, '</code></pre></div>')
+    ).replace(/<\/code><\/pre>/g, '</code></pre></div>'))
   } catch {
-    return props.content.replace(/\n/g, '<br>')
+    return sanitizeHtml(props.content.replace(/\n/g, '<br>'))
   }
 })
+
+function onRenderedClick(e: MouseEvent) {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-code-copy="1"]')
+  if (!btn) return
+  const code = btn.closest('.md-code')?.querySelector('code')?.textContent || ''
+  if (!code) return
+  navigator.clipboard.writeText(code).then(() => {
+    btn.textContent = '已复制'
+    btn.classList.add('copied')
+    setTimeout(() => {
+      btn.textContent = '复制'
+      btn.classList.remove('copied')
+    }, 1200)
+  })
+}
 
 // 长文导入检测 (V4 shouldCreateAssistantDocumentCard 行 7437)
 const showImportBtn = computed(() => {
@@ -85,6 +109,14 @@ function importToEditor() {
     props.agentName || '助手',
     props.content
   )
+  const fs = useFileStore()
+  fs.addFile({
+    category: 'text',
+    name: (props.agentName || '助手') + '的回复',
+    content: props.content,
+    mimeType: 'text/markdown',
+    size: props.content.length
+  })
   emitEvent('switch-panel', 'editor')
   importLabel.value = '✓ 已导入'
   setTimeout(() => { importLabel.value = '导入编辑区' }, 1500)
@@ -96,6 +128,14 @@ function appendToEditor() {
     props.agentName || '助手',
     props.content
   )
+  const fs = useFileStore()
+  fs.addFile({
+    category: 'text',
+    name: (props.agentName || '助手') + '的追加回复',
+    content: props.content,
+    mimeType: 'text/markdown',
+    size: props.content.length
+  })
   emitEvent('switch-panel', 'editor')
   appendLabel.value = '✓ 已追加'
   setTimeout(() => { appendLabel.value = '追加编辑区' }, 1500)
@@ -128,7 +168,7 @@ function appendToEditor() {
         </div>
       </div>
 
-      <div class="msg-body" v-html="renderedHtml"></div>
+      <div class="msg-body" @click="onRenderedClick" v-html="renderedHtml"></div>
 
       <!-- 工具调用卡片 -->
       <ToolCallCard v-if="toolCalls && toolCalls.length" :tool-calls="toolCalls" />

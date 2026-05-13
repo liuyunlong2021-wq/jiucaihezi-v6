@@ -389,6 +389,40 @@ export const useAgentStore = defineStore('agents', () => {
     return autoSniffMigration()
   }
 
+  // ─── skill:// 协议解析缓存 ───
+  const skillContentCache = new Map<string, string>()
+
+  /**
+   * 解析 skill:// 协议路径，从 /skills/ 目录加载真实 SKILL.md 内容
+   * BUG-10 修复: 17个 preset 搭子的 skillContent 是 skill:// 路径，
+   * 不解析的话 AI 收到的 system prompt 是路径字符串而非实际内容
+   */
+  function resolveSkillContent(skill: SkillConfig): SkillConfig {
+    if (!skill.skillContent.startsWith('skill://')) return skill
+    const cached = skillContentCache.get(skill.id)
+    if (cached) return { ...skill, skillContent: cached }
+    // 异步加载（不阻塞），先返回占位内容
+    const filePath = '/' + skill.skillContent.replace('skill://', '')
+    fetch(filePath).then(r => {
+      if (r.ok) return r.text()
+      throw new Error(`${r.status}`)
+    }).then(text => {
+      skillContentCache.set(skill.id, text)
+      // 触发 agents 列表刷新
+      _skillsVersion.value++
+    }).catch(() => {
+      // 加载失败时用 skill 描述作为兜底
+      const fallback = `## ${skill.name}\n\n${skill.description}\n\n请根据以上角色定义完成用户的请求。`
+      skillContentCache.set(skill.id, fallback)
+      _skillsVersion.value++
+    })
+    // 首次返回时用描述兜底，等异步加载完成后自动刷新
+    return { ...skill, skillContent: `## ${skill.name}\n\n${skill.description}\n\n请根据以上角色定义完成用户的请求。` }
+  }
+
+  // ─── BUG-9 修复: 用版本号 ref 驱动 computed，避免每次访问都解析 localStorage ───
+  const _skillsVersion = ref(0)
+
   // ─── loadSkills ───
   function loadSkills(): SkillConfig[] {
     let custom: SkillConfig[] = []
@@ -404,20 +438,29 @@ export const useAgentStore = defineStore('agents', () => {
         }
       }
     } catch { custom = [] }
-    return SKILL_PRESETS.concat(SUPERPOWER_SKILLS).concat(custom)
+
+    // BUG-5 修复: preset 搭子的用户修改也存在 custom 中（通过 id 覆盖）
+    const customIds = new Set(custom.map(c => c.id))
+    const presets = SKILL_PRESETS.concat(SUPERPOWER_SKILLS)
+      .filter(p => !customIds.has(p.id))  // custom 中有同 id 的则用 custom 版本
+
+    // BUG-10 修复: 解析 skill:// 协议路径
+    const all = [...presets, ...custom].map(s => resolveSkillContent(s))
+    return all
   }
 
   // ─── getCustomSkills ───
   function getCustomSkills(): SkillConfig[] {
-    const presetIds = SKILL_PRESETS.map(p => p.id)
-    return loadSkills().filter(s => !presetIds.includes(s.id))
+    try {
+      const raw = localStorage.getItem('jc_skills_v2')
+      return raw ? JSON.parse(raw) || [] : []
+    } catch { return [] }
   }
 
   // ─── saveCustomSkills ───
   function saveCustomSkills(list: SkillConfig[]) {
-    const presetIds = SKILL_PRESETS.map(p => p.id)
-    const safe = list.filter(s => !presetIds.includes(s.id))
-    localStorage.setItem('jc_skills_v2', JSON.stringify(safe))
+    localStorage.setItem('jc_skills_v2', JSON.stringify(list))
+    _skillsVersion.value++  // 触发 agents computed 刷新
   }
 
   // ─── 向后兼容 loadAgents / getCustomAgents / saveCustomAgents ───
@@ -425,7 +468,8 @@ export const useAgentStore = defineStore('agents', () => {
   function getCustomAgents(): SkillConfig[] { return getCustomSkills() }
   function saveCustomAgents(list: SkillConfig[]) { saveCustomSkills(list) }
 
-  const agents = computed(() => loadSkills())
+  // BUG-9 修复: computed 依赖 _skillsVersion ref，只在版本变化时重新计算
+  const agents = computed(() => { void _skillsVersion.value; return loadSkills() })
 
   function selectAgent(id: string | null) {
     if (!id) {
@@ -467,12 +511,28 @@ export const useAgentStore = defineStore('agents', () => {
     saveCustomSkills(custom)
   }
 
+  // BUG-5 修复: preset 搭子的修改也要持久化（存为 custom 覆盖版本）
   function updateSkill(id: string, patch: Partial<SkillConfig>) {
     const all = loadSkills()
     const idx = all.findIndex(s => s.id === id)
     if (idx === -1) return
-    Object.assign(all[idx], patch, { updatedAt: Date.now() })
-    saveCustomSkills(all.filter(s => !SKILL_PRESETS.map(p => p.id).includes(s.id)))
+    const updated = { ...all[idx], ...patch, updatedAt: Date.now() }
+
+    // 更新 custom 列表（包括 preset 的覆盖版本）
+    const custom = getCustomSkills()
+    const customIdx = custom.findIndex(s => s.id === id)
+    if (customIdx >= 0) {
+      custom[customIdx] = updated
+    } else {
+      // preset 搭子首次修改 → 添加到 custom 中覆盖
+      custom.push(updated)
+    }
+    saveCustomSkills(custom)
+
+    // 更新 skill:// 缓存
+    if (patch.skillContent) {
+      skillContentCache.set(id, patch.skillContent)
+    }
   }
 
   function deleteAgent(id: string) {
@@ -503,7 +563,17 @@ export const useAgentStore = defineStore('agents', () => {
 
   // ─── 我的搭子：用户主动添加的搭子列表 ───
   function getMySkills(): SkillConfig[] {
-    const myIds: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
+    let myIds: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
+
+    // 兼容迁移：如果 jc_my_skills 为空但有自建搭子，自动迁移
+    if (myIds.length === 0) {
+      const custom = getCustomSkills().filter(s => s.source !== 'superpower')
+      if (custom.length > 0) {
+        myIds = custom.map(s => s.id)
+        localStorage.setItem('jc_my_skills', JSON.stringify(myIds))
+      }
+    }
+
     const all = loadSkills()
     return myIds.map(id => all.find(s => s.id === id)).filter(Boolean) as SkillConfig[]
   }

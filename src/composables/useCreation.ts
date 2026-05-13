@@ -80,8 +80,20 @@ export const cpState = reactive<CpState>({
 export function saveCpState() {
   try {
     const { task, modelKey, prompt, tags, title, ar, size, res, dur, results } = cpState
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ task, modelKey, prompt, tags, title, ar, size, res, dur, results }))
-  } catch { /* noop */ }
+    // BUG-4 修复: 限制保存的结果数量，避免 URL 累积超过 localStorage 5MB 限制
+    const trimmedResults = results.slice(0, 50).map(r => ({
+      ...r,
+      // URL 超过 500 字符的截断（base64 data URL 不应该存进 localStorage）
+      url: r.url.length > 500 ? r.url.slice(0, 500) + '...[truncated]' : r.url,
+    }))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ task, modelKey, prompt, tags, title, ar, size, res, dur, results: trimmedResults }))
+  } catch (e) {
+    // 存储失败时至少保存非结果部分
+    try {
+      const { task, modelKey, prompt, tags, title, ar, size, res, dur } = cpState
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ task, modelKey, prompt, tags, title, ar, size, res, dur, results: [] }))
+    } catch { /* noop */ }
+  }
 }
 
 // ─── 计算属性 ───

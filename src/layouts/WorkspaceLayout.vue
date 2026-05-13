@@ -9,7 +9,7 @@
  * │    │ 可隐藏    │ 可隐藏   │  不可隐藏    │   可隐藏          │
  * └────┴──────────┴──────────┴──────────────┴──────────────────┘
  */
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import ActivityRail from '@/components/rail/ActivityRail.vue'
 import FileTreePanel from '@/components/filetree/FileTreePanel.vue'
 import HistoryPanel from '@/components/session/HistoryPanel.vue'
@@ -21,7 +21,6 @@ import BrainPanel from '@/components/brain/BrainPanel.vue'
 import EvolutionDiff from '@/components/agents/EvolutionDiff.vue'
 import EditorPanel from '@/components/editor/EditorPanel.vue'
 import CreationPanel from '@/components/creation/CreationPanel.vue'
-import StoragePanel from '@/components/storage/StoragePanel.vue'
 import { useAgentStore } from '@/stores/agentStore'
 import { onEvent } from '@/utils/eventBus'
 import type { SkillConfig } from '@/types/skill'
@@ -29,25 +28,35 @@ import type { SkillConfig } from '@/types/skill'
 const agentStore = useAgentStore()
 
 // ─── Col 5 当前面板 ───
-const rightPanel = ref<string>('')
+const rightPanel = ref<string>('creation')
 const showAgentEditor = ref(false)
 const showEvolution = ref(false)
 const evolutionSkill = ref<SkillConfig | null>(null)
 
 // 监听全局面板切换事件（如 MessageBubble 导入编辑区）
-onEvent('switch-panel', (panel: unknown) => {
+const offSwitchPanel = onEvent('switch-panel', (panel: unknown) => {
   if (typeof panel === 'string') {
     rightPanel.value = panel
   }
 })
 
+const offToggleFileTree = onEvent('toggle-file-tree', () => {
+  isFileTreeCollapsed.value = !isFileTreeCollapsed.value
+})
+
+onBeforeUnmount(() => {
+  offSwitchPanel()
+  offToggleFileTree()
+  onResizeEnd()
+})
+
 // Col 2 / Col 3 / Col 5 隐藏
-const isFileTreeCollapsed = ref(true)  // 默认隐藏
-const isHistoryCollapsed = ref(false)
+const isFileTreeCollapsed = ref(false)  // 默认显示
+const isHistoryCollapsed = ref(false)   // 默认显示
 const isRightPanelCollapsed = computed(() => !rightPanel.value)
 
 // 宽度
-const fileTreeWidth = ref(220)  // 足够显示5个tab
+const fileTreeWidth = ref(280)  // 足够显示5个tab
 const historyWidth = ref(200)
 const chatWidth = ref(400)
 const rightPanelWidth = ref(420)
@@ -351,9 +360,6 @@ function onResizeEnd() {
         <!-- 创作面板 -->
         <CreationPanel v-else-if="rightPanel === 'creation'" />
 
-        <!-- 存储空间 -->
-        <!-- 存储空间（已移到第二列文件面板） -->
-
         <!-- 设置 -->
         <SettingsPanel v-else-if="rightPanel === 'settings'" />
 
@@ -510,11 +516,11 @@ function onResizeEnd() {
 .ws-wh-empty2 { text-align: center; padding: 20px; font-size: 12px; color: var(--ink3); }
 
 /* 卡片三点菜单 */
-.ws-card-menu-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.15); }
+.ws-card-menu-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.2); }
 .ws-card-menu {
   position: fixed; min-width: 180px; padding: 8px;
-  background: var(--paper); border: 2px solid var(--line);
-  border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.2);
+  background: #fff; border: 2px solid #ddd;
+  border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.3);
   z-index: 10000;
 }
 .ws-card-menu-item {

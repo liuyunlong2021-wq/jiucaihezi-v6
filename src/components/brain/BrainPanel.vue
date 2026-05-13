@@ -76,7 +76,8 @@ async function runOrganize() {
     }
     progress.value = `找到 ${groups.length} 组对话（共 ${Object.values(grouped).reduce((a, b) => a + b.length, 0)} 条），开始提取知识...`
 
-    const config = await resolveApiConfig()
+    let config: any = null
+    try { config = await resolveApiConfig() } catch { /* 无 API Key */ }
     let totalExtracted = 0
     let apiErrors = 0
 
@@ -85,6 +86,21 @@ async function runOrganize() {
       if (text.length < 100) continue
 
       progress.value = `正在分析: ${skillId} (${convos.length} 条对话)...`
+
+      // 如果没有 API 配置，直接用前端规则提取
+      if (!config) {
+        for (const convo of convos.slice(-10)) {
+          await fileStore.addKnowledge({
+            name: `对话记录_${skillId}`,
+            content: convo,
+            topic: skillId,
+            skillId,
+            indexed: false,
+          })
+          totalExtracted++
+        }
+        continue
+      }
 
       try {
         const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
@@ -136,11 +152,17 @@ async function runOrganize() {
             }
           }
         } else {
-          progress.value = `${skillId}: LLM 返回非JSON格式，跳过...`
+          progress.value = `${skillId}: LLM 返回非JSON格式，使用原始存储...`
+          // fallback: 直接存原始对话
+          await fileStore.addKnowledge({ name: `对话_${skillId}`, content: text.slice(0, 2000), topic: skillId, skillId, indexed: false })
+          totalExtracted++
         }
       } catch (e: any) {
         apiErrors++
-        progress.value = `${skillId}: ${e.message || '请求失败'}，跳过...`
+        // fallback: API 失败时直接存原始对话
+        await fileStore.addKnowledge({ name: `对话_${skillId}`, content: text.slice(0, 2000), topic: skillId, skillId, indexed: false })
+        totalExtracted++
+        progress.value = `${skillId}: API失败，已存储原始对话`
       }
     }
 

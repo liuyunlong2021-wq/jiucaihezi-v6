@@ -3,7 +3,7 @@
  * EditorPanel — 正文编辑区
  * 搬迁自 code.html L1286-1312 + L10870-11163
  */
-import { onMounted, nextTick } from 'vue'
+import { onBeforeUnmount, onMounted, nextTick } from 'vue'
 import { useNotebook } from '@/composables/useNotebook'
 
 const {
@@ -12,6 +12,7 @@ const {
   addUserBlock, updateBlock, deleteBlock, clearAll,
   toggleFindReplace, doFindReplace, exportNotebook, load,
 } = useNotebook()
+import { onEvent } from '@/utils/eventBus'
 
 function onBlockInput(id: string, e: Event) {
   const el = e.target as HTMLDivElement
@@ -33,6 +34,13 @@ function onFindReplace() {
 }
 
 onMounted(() => load())
+
+const offFileRenamed = onEvent('file-renamed', (payload: any) => {
+  if (docTitle.value === payload.oldName) {
+    docTitle.value = payload.newName
+  }
+})
+onBeforeUnmount(offFileRenamed)
 </script>
 
 <template>
