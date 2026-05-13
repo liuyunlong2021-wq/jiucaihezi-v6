@@ -40,15 +40,23 @@ export async function webSearch(query: string, maxResults = 5): Promise<WebSearc
   const start = Date.now()
 
   try {
-    // 直接调用 Jina Search API（前端直连方案）
-    // 用户已提供 API Key，无需经过 Nginx 代理，解决 Cloudflare Pages 静态部署下的 404/JSON解析失败问题
-    const apiUrl = `https://s.jina.ai/${encodeURIComponent(query)}`
+    // 获取后端 Nginx 代理的基础 URL (例如 https://api.jiucaihezi.studio)
+    // 你的后端服务器在香港，可以无障碍访问 Jina Search。前端在大陆直接访问 s.jina.ai 会超时，所以必须走后端代理。
+    let apiBase = ''
+    try {
+      const config = await resolveApiConfig()
+      apiBase = config.apiBase.replace(/\/+$/, '')
+    } catch {
+      apiBase = ''
+    }
+
+    // 通过 Nginx 代理调用 Jina Search
+    const apiUrl = `${apiBase}/api/web-search/${encodeURIComponent(query)}`
 
     const res = await fetch(apiUrl, {
       method: 'GET',
       headers: { 
-        'Accept': 'application/json',
-        'Authorization': 'Bearer jina_7182c05eeca34cd8a64278bdeb8b48e2AhGhp03kGODG3WTPkAxFG6DwWzqO'
+        'Accept': 'application/json'
       },
       signal: AbortSignal.timeout(15000),
     })
