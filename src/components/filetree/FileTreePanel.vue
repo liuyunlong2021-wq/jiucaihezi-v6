@@ -114,11 +114,30 @@ async function handleUpload(e: Event) {
   input.value = ''
 }
 
+// ─── 空白处右键菜单 ───
+const blankContextMenu = ref({ show: false, x: 0, y: 0 })
+function openBlankContextMenu(e: MouseEvent) {
+  e.preventDefault()
+  // 只有点击空白处时才触发（排除点击具体 item）
+  const target = e.target as HTMLElement
+  if (target.closest('.fp-item') || target.closest('.fp-media-item') || target.closest('.fp-toolbar') || target.closest('.fp-tabs')) return
+  blankContextMenu.value = { show: true, x: e.clientX, y: e.clientY }
+}
+function closeBlankContextMenu() { blankContextMenu.value.show = false }
+
+// ─── 文件右键菜单 ───
 function openContextMenu(e: MouseEvent, file: FileEntry) {
   e.preventDefault()
   contextMenu.value = { show: true, x: e.clientX, y: e.clientY, file }
 }
 function closeContextMenu() { contextMenu.value.show = false }
+
+// 点击外部关闭所有菜单
+function closeAllMenus() {
+  closeContextMenu()
+  closeSkillMenu()
+  closeBlankContextMenu()
+}
 
 async function renameFile() {
   const f = contextMenu.value.file; closeContextMenu()
@@ -139,6 +158,53 @@ function openInEditor() {
   if (!f) return
   emitEvent('open-in-editor', { name: f.name, content: f.content, fileId: f.id })
   emitEvent('switch-panel', 'editor')
+}
+
+// ─── 知识库在编辑区打开 ───
+function openKnowledgeInEditor(f: FileEntry) {
+  emitEvent('open-in-editor', { name: f.name, content: f.content, fileId: f.id })
+  emitEvent('switch-panel', 'editor')
+}
+
+// ─── 知识库右键菜单编辑 ───
+function editKnowledgeTopic() {
+  const f = contextMenu.value.file; closeContextMenu()
+  if (!f) return
+  const newTopic = prompt('修改知识主题 (Topic)', f.topic || '')
+  if (newTopic !== null && newTopic !== f.topic) {
+    fileStore.updateFile(f.id, { topic: newTopic }).then(loadTab)
+  }
+}
+
+// ─── 打开长脑子面板 ───
+function openBrainPanel() {
+  emitEvent('switch-panel', 'brain')
+}
+
+// ─── 空白处新建操作 ───
+async function createNewFolder() {
+  const name = prompt('文件夹名称', '新文件夹')
+  if (name) await fileStore.addFile({ category: activeTab.value, name, content: '', mimeType: 'folder', size: 0, metadata: { isFolder: true, children: [] } })
+  await loadTab()
+  closeBlankContextMenu()
+}
+
+function createNewAgent() {
+  const name = prompt('搭子名称', '新搭子')
+  if (name) {
+    const skill = { id: 'skill_' + Date.now().toString(36), name, description: '', oneLineDesc: '', triggers: [], skillContent: '', references: [], examples: [], version: 1, source: 'user' as const, createdAt: Date.now(), updatedAt: Date.now(), evolutionLog: [] }
+    agentStore.createAgent(skill)
+    agentStore.moveToMy(skill.id)
+  }
+  closeBlankContextMenu()
+}
+
+function createNewKnowledge() {
+  const name = prompt('知识主题', '新知识点')
+  if (name) {
+    fileStore.addKnowledge({ name, content: '在此编辑知识内容...', topic: '通用', indexed: true }).then(f => openKnowledgeInEditor(f))
+  }
+  closeBlankContextMenu()
 }
 
 // ─── 新建文本文档 ───
@@ -463,7 +529,7 @@ const displayFiles = computed(() => {
 </script>
 
 <template>
-  <div class="fp" @click="closeContextMenu">
+  <div class="fp" @click="closeAllMenus" @contextmenu="openBlankContextMenu">
     <div class="fp-tabs">
       <button v-for="t in tabItems" :key="t.key" class="fp-tab" :class="{ active: activeTab === t.key }" @click="switchTab(t.key as Tab)">
         <span class="mso" style="font-size:14px">{{ t.icon }}</span>
@@ -481,12 +547,21 @@ const displayFiles = computed(() => {
           <div class="fp-knowledge-count">{{ items.length }} 条知识</div>
         </div>
         <div class="fp-knowledge-actions">
+          <button class="fp-kb-btn brain-btn" @click="openBrainPanel"><span class="mso">psychology</span> 唤起长脑子</button>
           <label class="fp-kb-btn"><span class="mso">merge</span> 合并<input type="file" accept=".json" @change="knowledgeMerge" hidden /></label>
           <button class="fp-kb-btn" @click="knowledgeBackup"><span class="mso">download</span> 备份</button>
           <button class="fp-kb-btn danger" @click="knowledgeDelete"><span class="mso">delete</span> 删除</button>
         </div>
         <div class="fp-list">
-          <div v-for="f in items" :key="f.id" class="fp-item"><span class="fp-item-name">{{ f.name }}</span><span class="fp-item-meta">{{ f.topic || '' }}</span></div>
+          <div v-for="f in items" :key="f.id" class="fp-item"
+               :class="{ selected: selectedIds.has(f.id), editing: f.id === activeEditingId }"
+               @dblclick="openKnowledgeInEditor(f)"
+               @contextmenu.stop="openContextMenu($event, f)">
+            <span class="mso" style="font-size:16px;color:var(--olive)">auto_stories</span>
+            <span class="fp-item-name">{{ f.name }}</span>
+            <span v-if="f.id === activeEditingId" class="fp-editing-dot" title="正在编辑中"></span>
+            <span class="fp-item-meta">{{ f.topic || '通用' }}</span>
+          </div>
           <div v-if="items.length === 0" class="fp-empty">知识库为空，开启整理后自动积累</div>
         </div>
       </div>
@@ -610,6 +685,13 @@ const displayFiles = computed(() => {
             <button class="fp-ctx-item" @click="importToCreation"><span class="mso">photo_camera</span> 导入创作面板</button>
             <button class="fp-ctx-item danger" @click="deleteFile"><span class="mso">delete</span> 删除</button>
           </template>
+          <!-- 知识库菜单 -->
+          <template v-else-if="activeTab === 'knowledge'">
+            <button class="fp-ctx-item" @click="renameFile"><span class="mso">edit</span> 重命名</button>
+            <button class="fp-ctx-item" @click="editKnowledgeTopic"><span class="mso">label</span> 修改主题</button>
+            <button class="fp-ctx-item" @click="openInEditor"><span class="mso">edit_note</span> 在编辑区打开</button>
+            <button class="fp-ctx-item danger" @click="deleteFile"><span class="mso">delete</span> 删除此条知识</button>
+          </template>
           <!-- 文本菜单 -->
           <template v-else>
             <button class="fp-ctx-item" @click="renameFile"><span class="mso">edit</span> 重命名</button>
@@ -633,6 +715,46 @@ const displayFiles = computed(() => {
           <button class="fp-ctx-item" @click="referenceSkill"><span class="mso">link</span> 引用</button>
           <button class="fp-ctx-item" @click="openSkillInEditor"><span class="mso">edit_note</span> 在编辑区打开</button>
           <button class="fp-ctx-item danger" @click="deleteSkill"><span class="mso">delete</span> 删除</button>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 空白处全局右键菜单 -->
+    <Teleport to="body">
+      <div v-if="blankContextMenu.show" class="fp-ctx-overlay" @click="closeBlankContextMenu" @contextmenu.prevent="closeBlankContextMenu">
+        <div class="fp-ctx-menu" :style="{ top: blankContextMenu.y + 'px', left: blankContextMenu.x + 'px' }">
+          <button class="fp-ctx-item" @click="loadTab(); closeBlankContextMenu()"><span class="mso">refresh</span> 刷新列表</button>
+          
+          <template v-if="activeTab === 'text'">
+            <button class="fp-ctx-item" @click="createNewDoc(); closeBlankContextMenu()"><span class="mso">note_add</span> 新建文本文档</button>
+            <button class="fp-ctx-item" @click="pasteFromClipboard(); closeBlankContextMenu()"><span class="mso">content_paste</span> 从剪贴板粘贴新建</button>
+            <!-- 触发原生上传按钮 -->
+            <label class="fp-ctx-item" style="cursor: pointer;">
+              <span class="mso">upload</span> 上传文本文件
+              <input type="file" multiple @change="handleUpload" hidden />
+            </label>
+          </template>
+
+          <template v-else-if="activeTab === 'image' || activeTab === 'video'">
+            <label class="fp-ctx-item" style="cursor: pointer;">
+              <span class="mso">upload</span> 上传媒体文件
+              <input type="file" multiple @change="handleUpload" hidden />
+            </label>
+            <button class="fp-ctx-item" @click="createNewFolder"><span class="mso">create_new_folder</span> 新建空文件夹</button>
+          </template>
+
+          <template v-else-if="activeTab === 'skill'">
+            <button class="fp-ctx-item" @click="createNewAgent"><span class="mso">smart_toy</span> 新建空搭子</button>
+            <label class="fp-ctx-item" style="cursor: pointer;">
+              <span class="mso">upload_file</span> 上传 SKILL.md
+              <input type="file" accept=".md" @change="handleSkillTextUpload" hidden />
+            </label>
+          </template>
+
+          <template v-else-if="activeTab === 'knowledge'">
+            <button class="fp-ctx-item" @click="openBrainPanel(); closeBlankContextMenu()"><span class="mso">psychology</span> 唤起长脑子</button>
+            <button class="fp-ctx-item" @click="createNewKnowledge"><span class="mso">add_circle</span> 手动新建知识点</button>
+          </template>
         </div>
       </div>
     </Teleport>
@@ -671,6 +793,8 @@ const displayFiles = computed(() => {
 .fp-kb-btn { display: flex; align-items: center; gap: 4px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--paper); color: var(--ink1); font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
 .fp-kb-btn:hover { border-color: var(--olive); color: var(--olive); }
 .fp-kb-btn.danger:hover { border-color: #e53935; color: #e53935; }
+.fp-kb-btn.brain-btn { background: rgba(107,142,35,.1); color: var(--olive); border-color: var(--olive); }
+.fp-kb-btn.brain-btn:hover { background: rgba(107,142,35,.2); }
 .fp-kb-btn .mso { font-size: 15px; }
 .fp-ctx-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.1); }
 .fp-ctx-menu { position: fixed; min-width: 160px; padding: 8px; background: #fff; border: 2px solid #ddd; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.25); z-index: 10000; }
