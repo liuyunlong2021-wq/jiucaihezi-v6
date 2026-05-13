@@ -98,17 +98,23 @@ function copyMessage() {
   })
 }
 
-// 导入到编辑区 — 直接写入第五列 EditorPanel
+// 导入到编辑区 — 通过事件通知 Tiptap EditorPanel
 const { addAgentBlock, blocks: nbBlocks } = useNotebook()
 const importLabel = ref('导入编辑区')
 const appendLabel = ref('追加编辑区')
 
 function importToEditor() {
+  // 同时保留旧 notebook 兼容 + 发送新 Tiptap 事件
   addAgentBlock(
     props.agentName || '助手',
     props.agentName || '助手',
     props.content
   )
+  // 通知 Tiptap 编辑器插入内容
+  emitEvent('import-to-editor', {
+    content: props.content,
+    agentName: props.agentName || '助手',
+  })
   const fs = useFileStore()
   fs.addFile({
     category: 'text',
@@ -128,6 +134,10 @@ function appendToEditor() {
     props.agentName || '助手',
     props.content
   )
+  emitEvent('import-to-editor', {
+    content: props.content,
+    agentName: props.agentName || '助手',
+  })
   const fs = useFileStore()
   fs.addFile({
     category: 'text',

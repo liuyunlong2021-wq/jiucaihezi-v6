@@ -9,6 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tiptap/extension-character-count": "^3.23.2",
+    "@tiptap/extension-image": "^3.23.2",
+    "@tiptap/extension-link": "^3.23.2",
+    "@tiptap/extension-placeholder": "^3.23.2",
+    "@tiptap/extension-underline": "^3.23.2",
+    "@tiptap/starter-kit": "^3.23.2",
+    "@tiptap/vue-3": "^3.23.2",
     "dompurify": "^3.4.2",
     "marked": "^18.0.3",
     "pinia": "^3.0.4",
@@ -18,9 +25,12 @@
   "devDependencies": {
     "@types/node": "^24.12.2",
     "@vitejs/plugin-vue": "^6.0.6",
+    "@vue/test-utils": "^2.4.10",
     "@vue/tsconfig": "^0.9.1",
+    "jsdom": "^29.1.1",
     "typescript": "~6.0.2",
     "vite": "^8.0.10",
+    "vitest": "^4.1.6",
     "vue-tsc": "^3.2.7"
   }
 }
