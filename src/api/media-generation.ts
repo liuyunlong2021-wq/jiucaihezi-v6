@@ -177,10 +177,37 @@ async function apiCall(path: string, body: any | null, method = 'POST'): Promise
     if (res.status === 429) {
       throw new Error('请求过于频繁，请稍后再试')
     }
+    if (res.status === 503) {
+      const text = await res.text().catch(() => '')
+      if (text.includes('model_not_found') || text.includes('无可用渠道')) {
+        throw new Error('该模型暂时不可用，服务维护中，请稍后再试')
+      }
+      throw new Error(`服务暂时不可用 (503)，请稍后再试`)
+    }
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
   }
-  return res.json()
+  const json = await res.json()
+  // ★ 检测上游返回的业务错误（HTTP 200 但实际失败）
+  checkUpstreamError(json)
+  return json
+}
+
+/**
+ * 检测上游业务错误（T8/RunningHub 返回 200 但 body 含 errorCode）
+ */
+function checkUpstreamError(data: any) {
+  if (!data) return
+  const errCode = data.errorCode || data.error_code
+  const errMsg = data.errorMessage || data.error_message || data.error?.message
+  if (errCode && errCode !== '0' && errCode !== 0) {
+    // errorCode 1001 = Invalid URL, 1000 = Unknown error
+    const friendlyMap: Record<string, string> = {
+      '1000': '上游服务临时故障，请重试',
+      '1001': '上游接口链接无效，请联系管理员',
+    }
+    throw new Error(friendlyMap[String(errCode)] || `上游错误 (${errCode}): ${errMsg || '未知错误'}`)
+  }
 }
 
 /**
@@ -230,10 +257,15 @@ async function apiCallMultipart(path: string, fields: Record<string, string | Bl
     body: formData,
   })
   if (!res.ok) {
+    if (res.status === 503) {
+      throw new Error('服务暂时不可用 (503)，请稍后再试')
+    }
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`)
   }
-  return res.json()
+  const json = await res.json()
+  checkUpstreamError(json)
+  return json
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {

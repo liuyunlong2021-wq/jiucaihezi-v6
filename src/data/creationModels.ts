@@ -114,7 +114,7 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
     label: 'Seedance 2.0 Pro',
     tasks: ['text-video', 'image-video'],
     provider: 'newapi-video',
-    modelName: 'seedance-2-0',  // NewAPI 渠道: doubao-seedance-2-0-260128 → 通过模型映射
+    modelName: 'seedance-2-0-pro',  // 渠道37 (sd2.mengfactory.cn)
     // 文档: ratio 支持 auto/21:9/16:9/4:3/1:1/3:4/9:16
     ar: ['auto', '21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
     defAr: '16:9',
