@@ -71,11 +71,21 @@ export const useSessionStore = defineStore('sessions', () => {
     }
     await idb.setRecord('conversations', convRecord)
 
-    // 保存消息
+    // 保存消息（清理 base64 图片防止 IndexedDB 膨胀）
+    const cleanMessages = messages.map(m => {
+      const cleaned = { ...m }
+      // 移除 base64 图片，保留 URL 图片引用
+      if (cleaned.images?.length) {
+        cleaned.images = cleaned.images.map(img =>
+          img.startsWith('data:') ? '' : img
+        ).filter(Boolean)
+      }
+      return cleaned
+    })
     const msgRecord = {
       id: sessionId,
       conversationId: sessionId,
-      items: messages.map(m => ({ ...m })),
+      items: cleanMessages,
       updatedAt: now,
     }
     await idb.setRecord('messages', msgRecord)

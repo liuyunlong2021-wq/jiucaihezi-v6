@@ -42,12 +42,12 @@ onEvent('switch-panel', (panel: unknown) => {
 })
 
 // Col 2 / Col 3 / Col 5 隐藏
-const isFileTreeCollapsed = ref(false)
+const isFileTreeCollapsed = ref(true)  // 默认隐藏
 const isHistoryCollapsed = ref(false)
 const isRightPanelCollapsed = computed(() => !rightPanel.value)
 
 // 宽度
-const fileTreeWidth = ref(160)
+const fileTreeWidth = ref(220)  // 足够显示5个tab
 const historyWidth = ref(200)
 const chatWidth = ref(400)
 const rightPanelWidth = ref(420)

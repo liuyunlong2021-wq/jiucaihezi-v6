@@ -37,77 +37,115 @@ async function runOrganize() {
   error.value = ''
 
   try {
-    const messages = await getAll('messages') as Array<{ role: string; content: string; agentId?: string; agentName?: string }>
-    if (!messages || messages.length === 0) {
+    // 读取 conversations 获取 agentId 映射
+    const conversations = await getAll('conversations') as Array<{ id: string; agentId?: string; title?: string }>
+    const convMap: Record<string, string> = {}
+    for (const c of conversations) {
+      if (c.agentId) convMap[c.id] = c.agentId
+    }
+
+    // messages store 中每条记录是 { id: sessionId, items: ChatMessage[] }
+    const records = await getAll('messages') as Array<{ id: string; items: Array<{ role: string; content: string; agentId?: string; agentName?: string }> }>
+    if (!records || records.length === 0) {
       progress.value = '没有对话记录'
       phase.value = 'done'
       return
     }
 
-    // 按搭子分组对话
+    // 展开所有消息，附带 session 的 agentId
     const grouped: Record<string, string[]> = {}
-    for (let i = 0; i < messages.length - 1; i++) {
-      const m = messages[i]
-      const next = messages[i + 1]
-      if (m.role === 'user' && next?.role === 'assistant') {
-        const key = m.agentId || m.agentName || '通用'
-        if (!grouped[key]) grouped[key] = []
-        grouped[key].push(`用户: ${m.content}\n助手: ${next.content}`)
+    for (const rec of records) {
+      if (!rec.items || !Array.isArray(rec.items)) continue
+      const sessionAgentId = convMap[rec.id] || '通用'
+      for (let i = 0; i < rec.items.length - 1; i++) {
+        const m = rec.items[i]
+        const next = rec.items[i + 1]
+        if (m.role === 'user' && next?.role === 'assistant') {
+          const key = m.agentId || sessionAgentId
+          if (!grouped[key]) grouped[key] = []
+          grouped[key].push(`用户: ${m.content}\n助手: ${next.content}`)
+        }
       }
     }
 
     const groups = Object.entries(grouped)
-    progress.value = `找到 ${groups.length} 组对话，开始提取知识...`
+    if (groups.length === 0) {
+      progress.value = `扫描了 ${records.length} 个会话，未找到有效对话对`
+      phase.value = 'done'
+      return
+    }
+    progress.value = `找到 ${groups.length} 组对话（共 ${Object.values(grouped).reduce((a, b) => a + b.length, 0)} 条），开始提取知识...`
 
     const config = await resolveApiConfig()
     let totalExtracted = 0
+    let apiErrors = 0
 
     for (const [skillId, convos] of groups) {
-      const text = convos.slice(-20).join('\n\n---\n\n') // 最近20条
+      const text = convos.slice(-20).join('\n\n---\n\n')
       if (text.length < 100) continue
 
       progress.value = `正在分析: ${skillId} (${convos.length} 条对话)...`
 
-      const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
-        method: 'POST',
-        headers: buildHeaders(config),
-        body: JSON.stringify({
-          model: config.model || 'claude-sonnet-4-6',
-          messages: [
-            { role: 'system', content: ORGANIZE_PROMPT },
-            { role: 'user', content: text.slice(0, 6000) },
-          ],
-          temperature: 0.3,
-          max_tokens: 2000,
-          stream: false,
-        }),
-      })
-
-      if (!res.ok) continue
-      const data = await res.json()
-      const content = data.choices?.[0]?.message?.content || ''
-
-      // 解析 JSON 数组
       try {
-        const jsonMatch = content.match(/\[[\s\S]*\]/)
+        const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
+          method: 'POST',
+          headers: buildHeaders(config),
+          body: JSON.stringify({
+            model: config.model || 'claude-sonnet-4-6',
+            messages: [
+              { role: 'system', content: ORGANIZE_PROMPT },
+              { role: 'user', content: text.slice(0, 6000) },
+            ],
+            temperature: 0.3,
+            max_tokens: 2000,
+            stream: false,
+          }),
+        })
+
+        if (!res.ok) {
+          apiErrors++
+          progress.value = `API 错误 (${res.status})，跳过 ${skillId}...`
+          continue
+        }
+        const data = await res.json()
+        const content = data.choices?.[0]?.message?.content || ''
+
+        if (!content) {
+          progress.value = `${skillId}: LLM 返回空内容，跳过...`
+          continue
+        }
+
+        // 解析 JSON 数组（兼容 markdown code block 包裹）
+        const cleaned = content.replace(/```json\s*/g, '').replace(/```\s*/g, '')
+        const jsonMatch = cleaned.match(/\[[\s\S]*\]/)
         if (jsonMatch) {
           const entries = JSON.parse(jsonMatch[0])
-          for (const entry of entries) {
-            await fileStore.addKnowledge({
-              name: entry.title || '知识点',
-              content: entry.content || '',
-              topic: entry.topic || skillId,
-              skillId,
-              indexed: true,
-              metadata: { type: entry.type, confidence: entry.confidence },
-            })
-            totalExtracted++
+          if (Array.isArray(entries)) {
+            for (const entry of entries) {
+              if (!entry.content && !entry.title) continue
+              await fileStore.addKnowledge({
+                name: entry.title || '知识点',
+                content: entry.content || '',
+                topic: entry.topic || skillId,
+                skillId,
+                indexed: true,
+                metadata: { type: entry.type, confidence: entry.confidence },
+              })
+              totalExtracted++
+            }
           }
+        } else {
+          progress.value = `${skillId}: LLM 返回非JSON格式，跳过...`
         }
-      } catch {}
+      } catch (e: any) {
+        apiErrors++
+        progress.value = `${skillId}: ${e.message || '请求失败'}，跳过...`
+      }
     }
 
-    progress.value = `整理完成，提取了 ${totalExtracted} 条知识`
+    progress.value = totalExtracted > 0
+      ? `整理完成，提取了 ${totalExtracted} 条知识${apiErrors > 0 ? `（${apiErrors} 个错误）` : ''}`
+      : `整理完成但未提取到知识${apiErrors > 0 ? `（${apiErrors} 个API错误，请检查余额或网络）` : '（对话内容可能不含可复用知识）'}`
     phase.value = 'done'
   } catch (e: any) {
     error.value = e.message || '整理失败'

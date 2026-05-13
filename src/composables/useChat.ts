@@ -337,8 +337,9 @@ export function useChat() {
           body: JSON.stringify({
             model: config.model,
             messages: apiMessages,
-            max_tokens: 4096,
             stream: true,
+            // ChatGPT 风格：不设 max_tokens，让模型自行决定输出长度
+            // 模型会根据上下文自动分配输出 token
           }),
         })
 
@@ -462,64 +463,83 @@ export function useChat() {
   }
 
   /**
-   * 构建 API 消息列表（包含 tool results + Vision 附件）
+   * 估算消息的 token 数（粗略：1 token ≈ 4 字符英文 / 2 字符中文）
+   */
+  function estimateTokens(content: unknown): number {
+    const text = typeof content === 'string' ? content : JSON.stringify(content || '')
+    // 中英文混合：取较大估算值
+    const enTokens = text.length / 4
+    const zhChars = (text.match(/[\u4e00-\u9fff]/g) || []).length
+    return Math.ceil(enTokens + zhChars * 0.5)
+  }
+
+  /**
+   * 构建 API 消息列表（ChatGPT 风格：智能截断上下文）
+   *
+   * 策略：
+   * - 保留 system prompt
+   * - 从最新消息往前取，直到达到上下文预算
+   * - 旧消息中的 base64 图片替换为占位符（节省 token）
+   * - 上下文预算 = 模型窗口 - 预留输出空间
    */
   function buildApiMessages(systemPrompt: string) {
-    const apiMessages: Array<Record<string, unknown>> = [
-      { role: 'system', content: systemPrompt },
-    ]
+    // 上下文预算：预留 32K 给输出，其余给输入
+    const MAX_INPUT_TOKENS = 200000 // ~200K tokens 输入预算，适配大部分模型
+    const systemTokens = estimateTokens(systemPrompt)
+    let remainingBudget = MAX_INPUT_TOKENS - systemTokens
 
-    for (const m of messages.value) {
-      if (m.role === 'system') continue
+    // 将消息转为 API 格式（从最新到最旧）
+    const allMessages = messages.value.filter(m => m.role !== 'system')
+    const selected: Array<Record<string, unknown>> = []
+
+    // 从最新消息往前扫描
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      const m = allMessages[i]
+      const isRecent = (allMessages.length - 1 - i) < 6 // 最近 3 轮（6 条消息）
+
+      let formatted: Record<string, unknown>
 
       if (m.role === 'tool') {
-        apiMessages.push({
-          role: 'tool',
-          content: m.content,
-          tool_call_id: m.toolCallId,
-        })
+        formatted = { role: 'tool', content: m.content, tool_call_id: m.toolCallId }
       } else if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-        apiMessages.push({
-          role: 'assistant',
-          content: m.content || null,
-          tool_calls: m.toolCalls,
-        })
+        formatted = { role: 'assistant', content: m.content || null, tool_calls: m.toolCalls }
       } else if (m.role === 'user' && (m.images?.length || m.files?.length)) {
-        // ★ Vision API 格式：content 为数组
         const contentParts: Array<Record<string, unknown>> = []
+        if (m.content) contentParts.push({ type: 'text', text: m.content })
 
-        // 文本部分
-        if (m.content) {
-          contentParts.push({ type: 'text', text: m.content })
-        }
-
-        // 图片部分
+        // 图片：最近消息保留，旧消息移除 base64（节省大量 token）
         if (m.images) {
           for (const img of m.images) {
-            contentParts.push({
-              type: 'image_url',
-              image_url: { url: img }
-            })
+            if (isRecent || !img.startsWith('data:')) {
+              contentParts.push({ type: 'image_url', image_url: { url: img } })
+            } else {
+              contentParts.push({ type: 'text', text: '[图片已省略]' })
+            }
           }
         }
-
-        // 文本文件部分（作为文本追加）
         if (m.files) {
           for (const f of m.files) {
-            contentParts.push({
-              type: 'text',
-              text: `\n\n[文件: ${f.name}]\n${f.content}`
-            })
+            contentParts.push({ type: 'text', text: `\n\n[文件: ${f.name}]\n${f.content}` })
           }
         }
-
-        apiMessages.push({ role: 'user', content: contentParts })
+        formatted = { role: 'user', content: contentParts }
       } else {
-        apiMessages.push({ role: m.role, content: m.content })
+        formatted = { role: m.role, content: m.content }
       }
+
+      const msgTokens = estimateTokens(formatted.content)
+
+      // 最近 3 轮必须保留（即使超预算）
+      if (!isRecent && msgTokens > remainingBudget) break
+
+      remainingBudget -= msgTokens
+      selected.unshift(formatted)
     }
 
-    return apiMessages
+    return [
+      { role: 'system', content: systemPrompt },
+      ...selected,
+    ]
   }
 
   /** 停止生成 */
