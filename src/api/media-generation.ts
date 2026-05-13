@@ -332,6 +332,7 @@ export async function generateImage(
   }
 
   // ── GPT Image 图生图 → multipart /v1/images/edits ──
+  // ★ 自动重试：上游偶尔超时返回空图（completion_tokens=0 但 HTTP 200），最多重试 2 次
   if (image) {
     onProgress?.(0, '上传图片中...')
     const fields: Record<string, string | Blob> = {
@@ -345,19 +346,31 @@ export async function generateImage(
       try { const imgRes = await fetch(image); fields.image = await imgRes.blob() }
       catch { throw new Error('无法加载参考图片') }
     }
-    const data = await apiCallMultipart('/v1/images/edits', fields)
-    const mediaUrl = extractMediaUrl(data, 'image')
-    if (!mediaUrl) throw new Error('图生图未获取到结果（响应: ' + JSON.stringify(data).slice(0, 200) + '）')
-    return { url: mediaUrl, type: 'image' }
+
+    let lastData: any = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) onProgress?.(attempt * 60, `第${attempt + 1}次尝试...`)
+      lastData = await apiCallMultipart('/v1/images/edits', fields)
+      const mediaUrl = extractMediaUrl(lastData, 'image')
+      if (mediaUrl) return { url: mediaUrl, type: 'image' }
+      console.warn(`[图生图] 第${attempt + 1}次返回空图，重试...`, lastData)
+    }
+    throw new Error('图生图多次尝试均未获取到结果（上游可能繁忙，请稍后再试）')
   }
 
   // ── GPT Image 文生图 → JSON /v1/images/generations ──
+  // ★ 同样加重试保护
   const body: any = { model, prompt, n: 1, size, response_format: 'url' }
-  onProgress?.(0, '提交中')
-  const data = await apiCall('/v1/images/generations', body)
-  const mediaUrl = extractMediaUrl(data, 'image')
-  if (!mediaUrl) throw new Error('未获取到图像结果（响应: ' + JSON.stringify(data).slice(0, 200) + '）')
-  return { url: mediaUrl, type: 'image' }
+  let lastGenData: any = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) onProgress?.(attempt * 30, `第${attempt + 1}次尝试...`)
+    else onProgress?.(0, '提交中')
+    lastGenData = await apiCall('/v1/images/generations', body)
+    const mediaUrl = extractMediaUrl(lastGenData, 'image')
+    if (mediaUrl) return { url: mediaUrl, type: 'image' }
+    console.warn(`[文生图] 第${attempt + 1}次返回空图，重试...`, lastGenData)
+  }
+  throw new Error('多次尝试均未获取到图像结果（上游可能繁忙，请稍后再试）')
 }
 
 /**
