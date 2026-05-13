@@ -104,7 +104,8 @@ async function runOrganize() {
 
         if (!res.ok) {
           apiErrors++
-          progress.value = `API 错误 (${res.status})，跳过 ${skillId}...`
+          const errBody = await res.text().catch(() => '')
+          progress.value = `API 错误 (${res.status}): ${errBody.slice(0, 100)}，跳过 ${skillId}...`
           continue
         }
         const data = await res.json()

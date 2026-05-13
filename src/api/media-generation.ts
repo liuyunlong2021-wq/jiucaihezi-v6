@@ -353,7 +353,7 @@ export async function generateVideo(
   const { model, prompt, aspectRatio, resolution, duration, imageUrl } = params
 
   // ── Seedance 系列 → /v1/videos (文档: seedance-2-0-fast-use-guide.md) ──
-  if (model.startsWith('seedance')) {
+  if (model.startsWith('seedance') || model.includes('seedance')) {
     const body: any = {
       model,
       prompt,
@@ -363,7 +363,8 @@ export async function generateVideo(
     }
     // Pro 模型支持 resolution（文档: 480p/720p/1080p）
     // Fast 模型不传 resolution（文档: "当前不要传 resolution"）
-    if (model.includes('pro') && resolution) {
+    // Pro = 不含 'fast' 的 seedance 模型
+    if (!model.includes('fast') && resolution) {
       body.resolution = resolution.toLowerCase()
     }
     // 图生视频：reference_mode + image_file_1

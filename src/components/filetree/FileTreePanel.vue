@@ -7,6 +7,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useFileStore, type FileEntry } from '@/composables/useFileStore'
 import { useAgentStore } from '@/stores/agentStore'
 import { emitEvent } from '@/utils/eventBus'
+import { parseSkillMd } from '@/types/skill'
 
 const fileStore = useFileStore()
 const agentStore = useAgentStore()
@@ -53,6 +54,14 @@ function toggleSelectAll() {
     selectedIds.value = new Set(filteredItems.value.map(f => f.id))
   } else {
     selectedIds.value.clear()
+  }
+}
+
+function toggleItem(id: string) {
+  if (selectedIds.value.has(id)) {
+    selectedIds.value.delete(id)
+  } else {
+    selectedIds.value.add(id)
   }
 }
 
@@ -138,6 +147,122 @@ async function knowledgeMerge(e: Event) {
   } catch { alert('文件格式不正确') }
   input.value = ''
 }
+
+// ─── 合并所选（合并为文件夹） ───
+async function mergeSelected() {
+  if (selectedIds.value.size < 2) return
+  const folderName = prompt('文件夹名称', '新文件夹')
+  if (!folderName) return
+  const folderId = `folder_${Date.now().toString(36)}`
+  // 创建文件夹记录
+  await fileStore.addFile({
+    category: activeTab.value as FileEntry['category'],
+    name: folderName,
+    content: '',
+    mimeType: 'folder',
+    size: 0,
+    metadata: { isFolder: true, children: Array.from(selectedIds.value) },
+  })
+  // 将选中文件标记为属于该文件夹
+  for (const id of selectedIds.value) {
+    await fileStore.updateFile(id, { folderId })
+  }
+  selectedIds.value.clear()
+  selectAll.value = false
+  await loadTab()
+}
+
+// ─── 搭子tab上传文件夹（解析 skill.md） ───
+async function handleSkillUpload(e: Event) {
+  const input = e.target as HTMLInputElement
+  if (!input.files) return
+
+  let foundSkill = false
+  const files = Array.from(input.files)
+
+  // 查找 skill.md 或 SKILL.md
+  for (const file of files) {
+    if (/skill\.md$/i.test(file.name)) {
+      const text = await file.text()
+      const parsed = parseSkillMd(text)
+
+      if (parsed.name || parsed.skillContent) {
+        const skill = {
+          id: 'upload_' + Date.now().toString(36),
+          name: parsed.name || '导入搭子',
+          description: parsed.description || '',
+          oneLineDesc: parsed.description || '',
+          triggers: parsed.triggers || [],
+          skillContent: parsed.skillContent || text,
+          references: [],
+          examples: [],
+          version: 1,
+          source: 'user' as const,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          evolutionLog: [],
+        }
+        agentStore.createAgent(skill)
+        agentStore.moveToMy(skill.id)
+        foundSkill = true
+      }
+      break
+    }
+  }
+
+  if (!foundSkill) {
+    alert('未找到 SKILL.md 文件，无法导入搭子')
+  } else {
+    await loadTab()
+  }
+  input.value = ''
+}
+
+// ─── 图片/视频导入创作面板 ───
+function importToCreation() {
+  const f = contextMenu.value.file; closeContextMenu()
+  if (f) {
+    emitEvent('import-to-creation', { name: f.name, url: f.content, type: f.category })
+    emitEvent('switch-panel', 'creation')
+  }
+}
+
+// ─── 文件夹相关 ───
+const currentFolder = ref<FileEntry | null>(null)
+
+function openFolder(folder: FileEntry) {
+  currentFolder.value = folder
+}
+
+function exitFolder() {
+  currentFolder.value = null
+}
+
+function deleteFolderItem() {
+  const f = contextMenu.value.file; closeContextMenu()
+  if (!f) return
+  if (f.mimeType === 'folder') {
+    if (!confirm(`确定删除文件夹「${f.name}」及其所有内容？`)) return
+    const children = (f.metadata?.children as string[]) || []
+    for (const cid of children) { fileStore.deleteFile(cid) }
+  }
+  fileStore.deleteFile(f.id)
+  loadTab()
+}
+
+// 过滤：排除已在文件夹中的文件（除非正在查看文件夹）
+const displayItems = computed(() => {
+  if (currentFolder.value) {
+    const children = (currentFolder.value.metadata?.children as string[]) || []
+    return items.value.filter(f => children.includes(f.id))
+  }
+  return filteredItems.value.filter(f => !f.folderId)
+})
+
+// 文件夹列表
+const folders = computed(() => {
+  return items.value.filter(f => f.mimeType === 'folder')
+})
 </script>
 
 <template>
@@ -168,41 +293,101 @@ async function knowledgeMerge(e: Event) {
     </template>
 
     <template v-else>
+      <!-- 工具栏 -->
       <div class="fp-toolbar">
         <div class="fp-search"><span class="mso" style="font-size:14px">search</span><input v-model="searchQuery" placeholder="搜索..." /></div>
-        <button class="fp-tool-btn" :class="{ active: selectAll }" @click="toggleSelectAll"><span class="mso">select_all</span></button>
-        <button class="fp-tool-btn" :disabled="selectedIds.size === 0" @click="deleteSelected"><span class="mso">delete</span></button>
-        <label v-if="activeTab !== 'skill'" class="fp-tool-btn"><span class="mso">upload</span><input type="file" multiple @change="handleUpload" hidden /></label>
+        <button class="fp-tool-btn" :class="{ active: selectAll }" @click="toggleSelectAll" title="全选"><span class="mso">select_all</span></button>
+        <button class="fp-tool-btn" :disabled="selectedIds.size === 0" @click="deleteSelected" title="删除所选"><span class="mso">delete</span></button>
+        <button v-if="(activeTab as string) !== 'knowledge'" class="fp-tool-btn" :disabled="selectedIds.size < 2" @click="mergeSelected" title="合并所选"><span class="mso">create_new_folder</span></button>
+        <label v-if="activeTab === 'skill'" class="fp-tool-btn" title="上传搭子文件夹">
+          <span class="mso">upload</span>
+          <input type="file" multiple webkitdirectory @change="handleSkillUpload" hidden />
+        </label>
+        <label v-else-if="(activeTab as string) !== 'skill'" class="fp-tool-btn" title="上传">
+          <span class="mso">upload</span>
+          <input type="file" multiple @change="handleUpload" hidden />
+        </label>
       </div>
+
+      <!-- 文件夹面包屑 -->
+      <div v-if="currentFolder" class="fp-breadcrumb">
+        <button class="fp-bread-btn" @click="exitFolder"><span class="mso">arrow_back</span> 返回</button>
+        <span class="fp-bread-name">{{ currentFolder.name }}</span>
+      </div>
+
       <div class="fp-list">
+        <!-- 搭子 tab -->
         <template v-if="activeTab === 'skill'">
-          <div v-for="s in agentStore.getMySkills()" :key="s.id" class="fp-item"><span class="mso" style="font-size:16px;color:var(--olive)">folder</span><span class="fp-item-name">{{ s.name }}</span><span class="fp-item-meta">{{ s.triggers?.slice(0,2).join(', ') }}</span></div>
+          <div v-for="s in agentStore.getMySkills()" :key="s.id" class="fp-item skill">
+            <span class="mso" style="font-size:16px;color:var(--olive)">folder</span>
+            <span class="fp-item-name">{{ s.name }}</span>
+            <span class="fp-item-meta">{{ s.triggers?.slice(0,2).join(', ') }}</span>
+          </div>
           <div v-if="agentStore.getMySkills().length === 0" class="fp-empty">还没有搭子</div>
         </template>
+
+        <!-- 图片/视频 tab -->
         <template v-else-if="activeTab === 'image' || activeTab === 'video'">
           <div class="fp-media-grid">
-            <div v-for="f in filteredItems" :key="f.id" class="fp-media-item" @contextmenu="openContextMenu($event, f)">
+            <div v-for="f in displayItems" :key="f.id" class="fp-media-item"
+                 :class="{ selected: selectedIds.has(f.id) }"
+                 @click="selectAll ? toggleItem(f.id) : null"
+                 @contextmenu="openContextMenu($event, f)">
               <img v-if="activeTab === 'image'" :src="f.content" class="fp-media-thumb" />
               <div v-else class="fp-media-thumb video"><span class="mso">movie</span></div>
               <span class="fp-media-name">{{ f.name }}</span>
             </div>
           </div>
-          <div v-if="filteredItems.length === 0" class="fp-empty">暂无{{ activeTab === 'image' ? '图片' : '视频' }}</div>
+          <div v-if="displayItems.length === 0" class="fp-empty">暂无{{ activeTab === 'image' ? '图片' : '视频' }}</div>
         </template>
+
+        <!-- 文本 tab -->
         <template v-else>
-          <div v-for="f in filteredItems" :key="f.id" class="fp-item" @contextmenu="openContextMenu($event, f)"><span class="mso" style="font-size:16px;color:var(--ink3)">description</span><span class="fp-item-name">{{ f.name }}</span><span class="fp-item-meta">{{ new Date(f.updatedAt).toLocaleDateString('zh-CN') }}</span></div>
-          <div v-if="filteredItems.length === 0" class="fp-empty">暂无文本文件</div>
+          <!-- 文件夹 -->
+          <div v-for="f in folders" :key="f.id" class="fp-item folder" @dblclick="openFolder(f)" @contextmenu="openContextMenu($event, f)">
+            <span class="mso" style="font-size:16px;color:#ff9800">folder</span>
+            <span class="fp-item-name">{{ f.name }}</span>
+            <span class="fp-item-meta">{{ ((f.metadata?.children as string[]) || []).length }} 个文件</span>
+          </div>
+          <!-- 文件 -->
+          <div v-for="f in displayItems.filter(i => i.mimeType !== 'folder')" :key="f.id" class="fp-item"
+               :class="{ selected: selectedIds.has(f.id) }"
+               @click="selectAll ? toggleItem(f.id) : null"
+               @contextmenu="openContextMenu($event, f)">
+            <input v-if="selectAll" type="checkbox" :checked="selectedIds.has(f.id)" @click.stop="toggleItem(f.id)" />
+            <span class="mso" style="font-size:16px;color:var(--ink3)">description</span>
+            <span class="fp-item-name">{{ f.name }}</span>
+            <span class="fp-item-meta">{{ new Date(f.updatedAt).toLocaleDateString('zh-CN') }}</span>
+          </div>
+          <div v-if="displayItems.length === 0 && folders.length === 0" class="fp-empty">暂无文本文件</div>
         </template>
       </div>
     </template>
 
+    <!-- 右键菜单 -->
     <Teleport to="body">
       <div v-if="contextMenu.show" class="fp-ctx-overlay" @click="closeContextMenu">
         <div class="fp-ctx-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }">
-          <button class="fp-ctx-item" @click="renameFile"><span class="mso">edit</span> 重命名</button>
-          <button class="fp-ctx-item" @click="referenceFile"><span class="mso">link</span> 引用</button>
-          <button v-if="activeTab === 'text'" class="fp-ctx-item" @click="openInEditor"><span class="mso">edit_note</span> 在编辑区打开</button>
-          <button class="fp-ctx-item danger" @click="deleteFile"><span class="mso">delete</span> 删除</button>
+          <!-- 文件夹菜单 -->
+          <template v-if="contextMenu.file?.mimeType === 'folder'">
+            <button class="fp-ctx-item" @click="renameFile"><span class="mso">edit</span> 重命名</button>
+            <button class="fp-ctx-item" @click="openFolder(contextMenu.file!); closeContextMenu()"><span class="mso">folder_open</span> 打开</button>
+            <button class="fp-ctx-item danger" @click="deleteFolderItem"><span class="mso">delete</span> 删除</button>
+          </template>
+          <!-- 图片/视频菜单 -->
+          <template v-else-if="activeTab === 'image' || activeTab === 'video'">
+            <button class="fp-ctx-item" @click="renameFile"><span class="mso">edit</span> 重命名</button>
+            <button class="fp-ctx-item" @click="referenceFile"><span class="mso">link</span> 引用</button>
+            <button class="fp-ctx-item" @click="importToCreation"><span class="mso">photo_camera</span> 导入创作面板</button>
+            <button class="fp-ctx-item danger" @click="deleteFile"><span class="mso">delete</span> 删除</button>
+          </template>
+          <!-- 文本菜单 -->
+          <template v-else>
+            <button class="fp-ctx-item" @click="renameFile"><span class="mso">edit</span> 重命名</button>
+            <button class="fp-ctx-item" @click="referenceFile"><span class="mso">link</span> 引用</button>
+            <button class="fp-ctx-item" @click="openInEditor"><span class="mso">edit_note</span> 在编辑区打开</button>
+            <button class="fp-ctx-item danger" @click="deleteFile"><span class="mso">delete</span> 删除</button>
+          </template>
         </div>
       </div>
     </Teleport>
@@ -248,4 +433,14 @@ async function knowledgeMerge(e: Event) {
 .fp-ctx-item:hover { background: var(--surface); }
 .fp-ctx-item.danger:hover { color: #e53935; }
 .fp-ctx-item .mso { font-size: 15px; color: var(--ink2); }
+/* 面包屑 */
+.fp-breadcrumb { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.fp-bread-btn { display: flex; align-items: center; gap: 2px; border: none; background: none; color: var(--olive); font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.fp-bread-name { font-size: 12px; font-weight: 600; color: var(--ink1); }
+/* 文件夹 */
+.fp-item.folder { background: rgba(255,152,0,.04); }
+.fp-item.folder:hover { background: rgba(255,152,0,.08); }
+/* 选中状态 */
+.fp-item.selected, .fp-media-item.selected { background: rgba(107,142,35,.08); border-radius: 6px; }
+.fp-media-item.selected .fp-media-thumb { border-color: var(--olive); }
 </style>
