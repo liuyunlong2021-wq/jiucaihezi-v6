@@ -11,19 +11,41 @@
  */
 import { ref, nextTick, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useChat } from '@/composables/useChat'
-import { useAgentStore, PILL_MODELS } from '@/stores/agentStore'
+import { useAgentStore } from '@/stores/agentStore'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useVaultStore } from '@/stores/vaultStore'
 import { useSkillRouter } from '@/composables/useSkillRouter'
 import { useFileStore } from '@/composables/useFileStore'
 import MessageBubble from './MessageBubble.vue'
+import MediaTaskBubble from './MediaTaskBubble.vue'
 import FileUploader from './FileUploader.vue'
 import ChatScrollNav from './ChatScrollNav.vue'
 import { onEvent } from '@/utils/eventBus'
 import AgentStatusBar from './AgentStatusBar.vue'
 import SkillPickerBar from './SkillPickerBar.vue'
+import VaultPickerBar from './VaultPickerBar.vue'
+import { useMediaTaskStore } from '@/stores/mediaTaskStore'
+import { RH_CREATION_MODELS } from '@/data/creationModels'
 
 const agentStore = useAgentStore()
 const sessionStore = useSessionStore()
+const vaultStore = useVaultStore()
+const mediaTaskStore = useMediaTaskStore()
+
+// ─── 媒体模型检测 ───
+// 已知的媒体模型前缀/ID（匹配 creationModels.ts 中的模型名）
+const MEDIA_MODEL_PATTERNS = [
+  'gpt-image', 'grok-image', 'grok-video', 'veo', 'seedance', 'suno',
+  'dall-e', 'midjourney', 'stable-diffusion', 'flux',
+]
+
+function isMediaModel(modelId: string): false | 'image' | 'video' | 'audio' {
+  const lower = modelId.toLowerCase()
+  if (lower.includes('suno') || lower.includes('udio')) return 'audio'
+  if (lower.includes('video') || lower.includes('veo') || lower.includes('seedance') || lower.includes('kling')) return 'video'
+  if (MEDIA_MODEL_PATTERNS.some(p => lower.includes(p))) return 'image'
+  return false
+}
 const { messages, isStreaming, sendMessage, stopStream, clearMessages, loadMessages,
   agentPhase, agentDetail, currentToolProgress, toolHistory,
   webSearchEnabled, webSearching, toggleWebSearch } = useChat()
@@ -45,6 +67,10 @@ const isFileProcessing = computed(() => Boolean(fileUploader.value?.isProcessing
 const canSend = computed(() => (
   Boolean(inputText.value.trim()) || attachedFileCount.value > 0
 ) && !isStreaming.value && !isFileProcessing.value)
+const currentVault = computed(() => vaultStore.activeVault)
+const showUnboundSessionHint = computed(() =>
+  Boolean(currentSessionId && messages.value.length > 0 && !vaultStore.activeVaultId)
+)
 
 // ─── 引用文件芯片 ───
 interface RefFile {
@@ -65,6 +91,21 @@ const offReferenceFile = onEvent('reference-file', (payload: unknown) => {
 })
 onBeforeUnmount(offReferenceFile)
 
+// 监听跨面板的"发送到对话"事件（媒体图片作为附件）
+const offSendToChat = onEvent('send-to-chat', (payload: unknown) => {
+  const p = payload as { url?: string; name?: string; type?: string }
+  if (p?.url && fileUploader.value) {
+    // 将 URL 转为附件添加到上传器
+    fetch(p.url).then(r => r.blob()).then(blob => {
+      const ext = p.type === 'video' ? 'mp4' : 'png'
+      const mime = p.type === 'video' ? 'video/mp4' : 'image/png'
+      const file = new File([blob], p.name || `media_${Date.now()}.${ext}`, { type: mime })
+      fileUploader.value?.addExternalFiles([file])
+    }).catch(() => { /* silently fail */ })
+  }
+})
+onBeforeUnmount(offSendToChat)
+
 function removeReference(index: number) {
   referenceFiles.value.splice(index, 1)
 }
@@ -84,23 +125,20 @@ function stepInputRecall(direction: number) {
 }
 function resetRecall() { recallState.value = { index: -1, draft: '' } }
 
-// 学习开关 — 开启后调用 karpathy-llm-wiki 持续摄入对话
-const learningEnabled = ref(localStorage.getItem('jc_learning') === 'true')
-function toggleLearning() {
-  learningEnabled.value = !learningEnabled.value
-  localStorage.setItem('jc_learning', String(learningEnabled.value))
-}
+// 整理模式：绑定知识库后自动整理（不再需要手动开关）
+const learningEnabled = computed(() => Boolean(vaultStore.activeVaultId))
 
-// 当前状态显示
-const headerStatus = computed(() => {
-  if (pipelineActive.value && currentSkillId.value) {
-    const stage = PIPELINE_STAGES.find(s => s.id === currentSkillId.value)
-    return stage ? `⚡ ${stage.name}` : agentStore.modelLabel
-  }
-  return agentStore.currentAgent
-    ? `正在调用 ${agentStore.currentAgent.name}`
-    : agentStore.modelLabel
-})
+// Token 水位估算
+const MAX_CONTEXT_TOKENS = 128000
+const tokenEstimate = computed(() =>
+  messages.value.reduce((sum, m) => sum + Math.ceil(m.content.length / 2.5), 0)
+)
+const tokenPercent = computed(() =>
+  Math.min(99, Math.round(tokenEstimate.value / MAX_CONTEXT_TOKENS * 100))
+)
+const tokenLevel = computed(() =>
+  tokenPercent.value > 85 ? 'danger' : tokenPercent.value > 60 ? 'warn' : 'ok'
+)
 
 // 当前 sessionId
 let currentSessionId = ''
@@ -112,6 +150,7 @@ function persistCurrentSession() {
     currentSessionId,
     agentStore.currentAgent?.id || '',
     messageSnapshot,
+    vaultStore.activeVaultId,
   )
 }
 
@@ -134,6 +173,8 @@ watch(() => sessionStore.activeSessionId, async (newId) => {
   currentSessionId = newId
   const history = await sessionStore.loadSessionMessages(newId)
   loadMessages(history)
+  const session = sessionStore.sessions.find(s => s.id === newId)
+  if (session) vaultStore.setActiveVault(session.vaultId || null)
 }, { immediate: true })
 
 /**
@@ -165,21 +206,76 @@ async function handleSend() {
   const refFiles = [...referenceFiles.value]
   referenceFiles.value = []
 
-  // 收集附件
+  // 收集附件（V2: 支持远程 URL + Office 文本）
   const attachedFiles = fileUploader.value?.attachedFiles || []
   const images: string[] = []
   const files: Array<{ name: string; content: string }> = []
 
   for (const af of attachedFiles) {
-    if (af.preview) {
+    // 优先使用远程 URL（大图/上传的文件）
+    if (af.remoteUrl && !af.textContent) {
+      images.push(af.remoteUrl)
+    } else if (af.preview && !af.textContent) {
       images.push(af.preview)
-    } else if (af.textContent) {
+    }
+    if (af.textContent) {
       files.push({ name: af.file.name, content: af.textContent })
     }
   }
 
   // 清空附件
   fileUploader.value?.clearAll()
+
+  // ─── 媒体模型拦截：如果当前模型是媒体生成模型，走 Task Engine ───
+  const currentModelId = agentStore.currentModel
+  const mediaType = isMediaModel(currentModelId)
+  if (mediaType) {
+    // 首次发消息时创建 session
+    if (!currentSessionId) {
+      currentSessionId = sessionStore.startNewSession(
+        agentStore.currentAgent?.id || '',
+        vaultStore.activeVaultId,
+      )
+    }
+
+    // 插入用户消息
+    const userMsgId = 'msg_' + Date.now().toString(36) + '_u'
+    messages.value.push({
+      id: userMsgId,
+      role: 'user',
+      content: text,
+      timestamp: Date.now(),
+      images: images.length > 0 ? images : undefined,
+    })
+
+    // 提交到任务引擎
+    const taskMsgId = 'msg_' + Date.now().toString(36) + '_t'
+    const taskId = await mediaTaskStore.submitTask({
+      type: mediaType,
+      model: currentModelId,
+      modelLabel: agentStore.modelLabel,
+      prompt: text,
+      referenceImages: images,
+      source: 'chat',
+      chatMessageId: taskMsgId,
+      imageParams: mediaType === 'image' ? { model: currentModelId, prompt: text } : undefined,
+      videoParams: mediaType === 'video' ? { model: currentModelId, prompt: text } : undefined,
+    })
+
+    // 插入任务占位消息（assistant 角色，content 标记 taskId）
+    messages.value.push({
+      id: taskMsgId,
+      role: 'assistant',
+      content: `[MEDIA_TASK:${taskId}]`,
+      timestamp: Date.now(),
+      agentId: agentStore.currentAgent?.id,
+    })
+
+    persistCurrentSession()
+    await nextTick()
+    scrollNav.value?.autoScrollIfNeeded()
+    return // 不走文本 LLM 流程
+  }
 
   // 1. Superpowers 路由：牛马开关 ON 时自动分析意图
   if (agentStore.routerEnabled) {
@@ -198,7 +294,10 @@ async function handleSend() {
 
   // 2. 首次发消息时创建 session
   if (!currentSessionId) {
-    currentSessionId = sessionStore.startNewSession(agentStore.currentAgent?.id || '')
+    currentSessionId = sessionStore.startNewSession(
+      agentStore.currentAgent?.id || '',
+      vaultStore.activeVaultId,
+    )
   }
 
   // 3. 合并引用文件到 files
@@ -211,6 +310,8 @@ async function handleSend() {
     systemPrompt: buildSystemPrompt(),
     agentId: agentStore.currentAgent?.id,
     agentName: agentStore.currentAgent?.name || agentStore.modelLabel,
+    vaultId: vaultStore.activeVaultId || undefined,
+    sessionId: currentSessionId,
     images: images.length > 0 ? images : undefined,
     files: files.length > 0 ? files : undefined,
   })
@@ -226,20 +327,48 @@ async function handleSend() {
   // 5. 保存到 IndexedDB
   persistCurrentSession()
 
-  // 6. 整理模式：自动将对话存入知识库
-  if (learningEnabled.value) {
+  // 6. 知识库绑定时自动将对话存入 raw/对话记录/
+  if (vaultStore.activeVaultId) {
     const lastTwo = messages.value.slice(-2)
-    const convo = lastTwo.map(m => `${m.role}: ${m.content}`).join('\n')
-    const skillId = agentStore.currentAgent?.id || 'general'
-    const topic = agentStore.currentAgent?.name || '通用'
-    const fs = useFileStore()
-    fs.addKnowledge({
-      name: `对话_${new Date().toLocaleTimeString('zh-CN')}`,
-      content: convo,
-      topic,
-      skillId,
-      indexed: false,
-    })
+    if (lastTwo.length >= 2) {
+      const fs = useFileStore()
+      const vaultId = vaultStore.activeVaultId
+      const now = new Date()
+      const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+      const fileName = `对话记录_${dateStr}.md`
+
+      // 格式化本轮对话内容
+      const entry = `\n时间：${timeStr}\n我：${lastTwo[0]?.content || ''}\nAI：${lastTwo[1]?.content || ''}\n`
+
+      // 找到 raw/对话记录/ 文件夹
+      const chatLogFolder = await fs.findFolderByPath(vaultId, 'raw/对话记录')
+      if (chatLogFolder) {
+        // 查找当天的对话记录文件
+        const children = await fs.getChildren(chatLogFolder.id, vaultId)
+        const todayFile = children.find(f => f.name === fileName && f.mimeType !== 'folder')
+        if (todayFile) {
+          // 追加到当天文件
+          await fs.appendToFile(todayFile.id, entry)
+        } else {
+          // 新建当天文件
+          await fs.addFile({
+            category: 'knowledge',
+            name: fileName,
+            content: `# 对话记录 ${dateStr}\n${entry}`,
+            mimeType: 'text/markdown',
+            size: 0,
+            vaultId,
+            folderId: chatLogFolder.id,
+            kind: 'raw',
+            indexed: false,
+            sourceSessionId: currentSessionId,
+            sourceMessageIds: lastTwo.map(m => m.id),
+            metadata: { vaultFolder: 'raw', kind: 'conversation-log' },
+          })
+        }
+      }
+    }
   }
 }
 
@@ -281,6 +410,10 @@ function startNew() {
 function selectModel(modelId: string) {
   agentStore.setModel(modelId)
   showModelMenu.value = false
+}
+
+function toggleModelMenu() {
+  showModelMenu.value = !showModelMenu.value
 }
 
 // 键盘事件 (V4 chatKeydown 行 10678)
@@ -328,9 +461,17 @@ function handleInput(e: Event) {
   autoGrow(e.target as HTMLTextAreaElement)
 }
 
-onMounted(() => {
+onMounted(async () => {
   agentStore.restoreLastAgent()
-  sessionStore.loadAllSessions()
+  await Promise.all([
+    sessionStore.loadAllSessions(),
+    vaultStore.loadAll(),
+    mediaTaskStore.init(),
+  ])
+  // 静默拉取动态模型列表（不阻塞 UI）
+  agentStore.fetchModels()
+  const session = sessionStore.sessions.find(s => s.id === currentSessionId)
+  if (session) vaultStore.setActiveVault(session.vaultId || null)
 })
 
 // ─── 拖拽上传 ───
@@ -373,23 +514,26 @@ function onDrop(e: DragEvent) {
       <span class="mso" style="font-size:48px">upload_file</span>
       <span>松开上传文件</span>
     </div>
-    <!-- Header — from code.html #chat-panel-header (行 1095-1118) -->
+    <!-- Header -->
     <div class="cp-header">
       <div class="cp-title">
-        <span class="cp-name">{{ headerStatus }}</span>
+        <button class="cp-new-chat-btn" @click="startNew" title="新建对话 (清空当前上下文)">
+          <span class="mso" style="font-size:16px">add_circle</span>
+          <span>新建对话</span>
+        </button>
         <span v-if="routeNotification" class="cp-route-badge">{{ routeNotification }}</span>
         <span v-if="isRouting" class="cp-route-badge routing">🔄 路由中...</span>
       </div>
       <div class="cp-actions">
         <!-- 模型选择 -->
         <div class="cp-model-wrap">
-          <button class="cp-model-btn" @click="showModelMenu = !showModelMenu">
+          <button class="cp-model-btn" @click="toggleModelMenu">
             <span class="mso" style="font-size: 14px;">deployed_code</span>
             {{ agentStore.modelLabel }}
           </button>
           <div v-if="showModelMenu" class="cp-model-menu">
             <button
-              v-for="m in PILL_MODELS"
+              v-for="m in agentStore.availableModels"
               :key="m.id"
               class="cp-model-item"
               :class="{ active: m.id === agentStore.currentModel }"
@@ -405,13 +549,22 @@ function onDrop(e: DragEvent) {
           <span class="cp-pill-dot"></span>
           <span class="cp-pill-text">🌐 搜索</span>
         </button>
-        <!-- 整理药丸开关 -->
-        <button class="cp-pill-toggle" :class="{ on: learningEnabled }"
-                title="整理模式（自动将对话整理到知识库）" @click="toggleLearning">
+        <!-- 整理状态指示（绑定知识库后自动开启） -->
+        <span v-if="learningEnabled" class="cp-pill-toggle on" title="已绑定知识库，对话自动存入 raw/对话记录/">
           <span class="cp-pill-dot"></span>
-          <span class="cp-pill-text">整理</span>
-        </button>
+          <span class="cp-pill-text">整理中</span>
+        </span>
+        <!-- Token 水位 -->
+        <div class="cp-token-meter" :class="tokenLevel" :title="'上下文已使用 ' + tokenPercent + '%'">
+          <span class="cp-token-num">{{ tokenPercent }}%</span>
+        </div>
       </div>
+    </div>
+
+    <!-- ★ Superpowers Pipeline 进度条 -->
+    <div v-if="showUnboundSessionHint" class="cp-vault-hint">
+      <span class="mso">info</span>
+      <span>此对话尚未绑定知识库，在下方知识库选择器中绑定。</span>
     </div>
 
     <!-- ★ Superpowers Pipeline 进度条 -->
@@ -452,21 +605,33 @@ function onDrop(e: DragEvent) {
         <p>聊天用豆包，干活用韭菜盒子。</p>
       </div>
 
-      <!-- Message list (使用 MessageBubble 组件) -->
-      <MessageBubble
-        v-for="msg in messages.filter(m => m.content || m.toolCalls)"
-        :key="msg.id"
-        :message-id="msg.id"
-        :content="msg.content"
-        :role="msg.role"
-        :agent-name="msg.agentName"
-        :tool-calls="msg.toolCalls"
-        :tool-name="msg.toolName"
-        :images="msg.images"
-        :files="msg.files"
-        @retry="retryMessage"
-        @delete="deleteMessage"
-      />
+      <!-- Message list -->
+      <template v-for="msg in messages.filter(m => m.content || m.toolCalls)" :key="msg.id">
+        <!-- 媒体任务气泡 -->
+        <div v-if="msg.content.startsWith('[MEDIA_TASK:')" class="msg assistant">
+          <div class="msg-meta">
+            <div class="msg-meta-avatar"><span class="mso" style="font-size:14px">palette</span></div>
+            <span class="msg-meta-name">媒体生成</span>
+          </div>
+          <div class="msg-bubble">
+            <MediaTaskBubble :task-id="msg.content.slice(12, -1)" />
+          </div>
+        </div>
+        <!-- 普通消息气泡 -->
+        <MessageBubble
+          v-else
+          :message-id="msg.id"
+          :content="msg.content"
+          :role="msg.role"
+          :agent-name="msg.agentName"
+          :tool-calls="msg.toolCalls"
+          :tool-name="msg.toolName"
+          :images="msg.images"
+          :files="msg.files"
+          @retry="retryMessage"
+          @delete="deleteMessage"
+        />
+      </template>
 
       <!-- 联网搜索中指示器 -->
       <div v-if="webSearching" class="cp-web-searching">
@@ -502,6 +667,9 @@ function onDrop(e: DragEvent) {
 
     <!-- 搭子快捷按钮栏 -->
     <SkillPickerBar />
+
+    <!-- 知识库选择器 -->
+    <VaultPickerBar />
 
     <!-- 引用文件条 -->
     <div v-if="referenceFiles.length > 0" class="cp-ref-bar">
@@ -580,13 +748,13 @@ function onDrop(e: DragEvent) {
 
 /* Header — from code.html line 208-219 */
 .cp-header {
-  min-height: 48px;
+  height: var(--app-header-height); box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 14px;
   border-bottom: 1px solid var(--border2);
-  background: var(--surface-alt);
+  background: transparent;
   flex-shrink: 0;
   gap: 12px;
 }
@@ -597,13 +765,36 @@ function onDrop(e: DragEvent) {
   font-size: 13px;
   font-weight: 700;
   color: var(--ink);
-}
-.cp-name {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 240px;
 }
+/* 新建对话按钮 */
+.cp-new-chat-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 5px 12px; border: 1px solid var(--olive);
+  border-radius: 8px; background: transparent;
+  color: var(--olive); font-size: 12px; font-weight: 700;
+  cursor: pointer; font-family: inherit; transition: all .15s;
+}
+.cp-new-chat-btn:hover {
+  background: var(--olive); color: #fff;
+}
+@container (max-width: 320px) {
+  .cp-new-chat-btn span:not(.mso) { display: none; }
+  .cp-new-chat-btn { padding: 5px 8px; }
+}
+/* Token 水位 */
+.cp-token-meter {
+  padding: 2px 8px; border-radius: 10px;
+  font-size: 10px; font-weight: 700; font-family: 'SF Mono', monospace;
+  border: 1px solid var(--line); transition: all .3s;
+}
+.cp-token-meter.ok { color: #4caf50; border-color: #c8e6c9; }
+.cp-token-meter.warn { color: #ff9800; border-color: #ff9800; background: rgba(255,152,0,.06); }
+.cp-token-meter.danger { color: #e53935; border-color: #e53935; background: rgba(229,57,53,.06); animation: pulse-danger 1.5s infinite; }
+@keyframes pulse-danger { 0%,100%{opacity:1} 50%{opacity:.6} }
 .cp-route-badge {
   font-size: 11px;
   padding: 2px 8px;
@@ -627,6 +818,32 @@ function onDrop(e: DragEvent) {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+/* vault 相关样式已迁移到 VaultPickerBar */
+.cp-vault-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-bottom: 1px solid rgba(217, 119, 6, 0.18);
+  background: rgba(251, 191, 36, 0.08);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 650;
+  flex-shrink: 0;
+}
+.cp-vault-hint button {
+  margin-left: auto;
+  padding: 4px 9px;
+  border: 1px solid rgba(146, 64, 14, 0.35);
+  border-radius: 999px;
+  background: var(--surface);
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
 }
 .cp-model-btn {
   display: flex;

@@ -4,15 +4,15 @@
   "profiles": {
     "personal": {
       "label": "个人 Key",
-      "apiKey": "48fdb2a144914e0a92063926778dd467",
+      "apiKey": "",
       "baseUrl": "https://www.runninghub.cn/openapi/v2",
-      "notes": "低端/量产漫剧默认走个人 key"
+      "notes": "请在本地 OpenClaw 配置或环境变量 RUNNINGHUB_API_KEY_PERSONAL 中填写，不要写入发布包"
     },
     "enterprise": {
       "label": "企业 Key",
-      "apiKey": "32ed89793b5f4d1aa579ebd8162e60fa",
+      "apiKey": "",
       "baseUrl": "https://www.runninghub.cn/openapi/v2",
-      "notes": "精品生产默认走企业 key 后即可启用"
+      "notes": "请在本地 OpenClaw 配置或环境变量 RUNNINGHUB_API_KEY_ENTERPRISE 中填写，不要写入发布包"
     }
   },
   "aliases": {

@@ -9,7 +9,8 @@
  */
 import { ref, computed } from 'vue'
 import { resolveApiConfig, buildHeaders, buildChatErrorMessage, type ApiConfig } from '@/utils/api'
-import { recallKnowledge } from '@/composables/useBrain'
+import { ingestConversation, recallKnowledge } from '@/composables/useBrain'
+import { useFileStore } from '@/composables/useFileStore'
 import { webSearch } from '@/utils/webSearch'
 
 // ─── 类型定义 ───
@@ -21,6 +22,7 @@ export interface ChatMessage {
   timestamp: number
   agentId?: string
   agentName?: string
+  vaultId?: string
   toolCalls?: ToolCall[]       // AI 请求的工具调用
   toolCallId?: string          // tool result 对应的 call id
   toolName?: string            // tool result 对应的工具名
@@ -74,6 +76,11 @@ const agentPhase = ref<AgentPhase>('idle')
 const agentDetail = ref('')          // 状态详情文字
 const currentToolProgress = ref<ToolProgress | null>(null)
 const toolHistory = ref<ToolProgress[]>([])   // 本轮所有工具调用记录
+
+// 上下文压缩常量
+const MAX_CONTEXT_TOKENS = 128000
+const COMPRESS_THRESHOLD = 0.85  // 85% 水位线触发压缩
+const KEEP_RECENT_MESSAGES = 12  // 保留最近 6 轮 (user+assistant)
 
 // ─── 内部工具 ───
 
@@ -135,12 +142,28 @@ function finishController(runId: number, controller: AbortController) {
   isStreaming.value = false
 }
 
+async function ingestAssistantOutput(message: ChatMessage, options: {
+  agentId?: string
+  vaultId?: string
+  sessionId?: string
+}) {
+  const content = message.content.trim()
+  if (!options.vaultId || !content || content.startsWith('⚠️')) return
+  await ingestConversation(options.agentId || message.agentId || 'general', `助手: ${content}`, {
+    vaultId: options.vaultId,
+    sessionId: options.sessionId,
+    sourceMessageIds: [message.id],
+  })
+}
+
 // ─── 内置工具执行器（小白按钮映射的后端） ───
+
+// ─── Office 后端服务地址 ───
+const OFFICE_API_BASE = 'https://api.jiucaihezi.studio/office'
 
 /**
  * 执行工具调用
- * 当前为模拟执行 — 实际需要对接各 skill handler
- * 后续扩展：注册式 tool handler
+ * 内置工具 + Office 后端对接
  */
 async function executeToolCall(call: ToolCall): Promise<string> {
   const name = call.function.name
@@ -160,19 +183,112 @@ async function executeToolCall(call: ToolCall): Promise<string> {
 
   // 内置工具：搜索
   if (name === 'web_search' || name === 'search') {
+    try {
+      const query = String(args.query || args.q || '')
+      if (!query) return JSON.stringify({ status: 'error', error: '缺少搜索关键词' })
+      const results = await webSearch(query)
+      return JSON.stringify({ status: 'success', results })
+    } catch (err) {
+      return JSON.stringify({ status: 'error', error: (err as Error).message })
+    }
+  }
+
+  // ─── Office 工具：创建文档 ───
+  if (name === 'office_create' || name === 'create_document') {
+    try {
+      const form = new FormData()
+      form.append('doc_type', String(args.doc_type || args.format || 'docx'))
+      form.append('content', typeof args.content === 'string' ? args.content : JSON.stringify(args.content || args))
+      if (args.filename) form.append('filename', String(args.filename))
+      const res = await fetch(`${OFFICE_API_BASE}/create`, { method: 'POST', body: form })
+      const data = await res.json()
+      if (data.download_url) {
+        data.download_url = OFFICE_API_BASE.replace('/office', '') + data.download_url
+      }
+      return JSON.stringify(data)
+    } catch (err) {
+      return JSON.stringify({ status: 'error', error: (err as Error).message })
+    }
+  }
+
+  // ─── Office 工具：格式转换 ───
+  if (name === 'office_convert' || name === 'convert_document') {
+    try {
+      const form = new FormData()
+      form.append('target_format', String(args.target_format || 'pdf'))
+      // 如果有 base64 文件内容
+      if (args.file_base64 && args.filename) {
+        const binary = atob(String(args.file_base64))
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        const blob = new Blob([bytes])
+        form.append('file', blob, String(args.filename))
+      }
+      const res = await fetch(`${OFFICE_API_BASE}/convert`, { method: 'POST', body: form })
+      const data = await res.json()
+      if (data.download_url) {
+        data.download_url = OFFICE_API_BASE.replace('/office', '') + data.download_url
+      }
+      return JSON.stringify(data)
+    } catch (err) {
+      return JSON.stringify({ status: 'error', error: (err as Error).message })
+    }
+  }
+
+  // ─── Office 工具：执行代码 ───
+  if (name === 'office_execute' || name === 'run_code' || name === 'code_execute') {
+    try {
+      const form = new FormData()
+      form.append('code', String(args.code || ''))
+      form.append('language', String(args.language || 'python'))
+      form.append('timeout', String(args.timeout || 60))
+      const res = await fetch(`${OFFICE_API_BASE}/execute`, { method: 'POST', body: form })
+      const data = await res.json()
+      // 补全下载链接
+      if (data.output_files) {
+        for (const f of data.output_files) {
+          if (f.download_url) {
+            f.download_url = OFFICE_API_BASE.replace('/office', '') + f.download_url
+          }
+        }
+      }
+      return JSON.stringify(data)
+    } catch (err) {
+      return JSON.stringify({ status: 'error', error: (err as Error).message })
+    }
+  }
+
+  // ─── Office 工具：读取文档 ───
+  if (name === 'office_read' || name === 'read_document') {
     return JSON.stringify({
-      status: 'success',
-      note: `搜索功能需要后端支持。查询: ${args.query || args.q || ''}`,
+      status: 'info',
+      note: '文档读取需要用户先上传文件。请让用户通过聊天界面上传文件后重试。',
     })
   }
 
-  // 内置工具：代码执行
-  if (name === 'code_execute' || name === 'run_code') {
-    return JSON.stringify({
-      status: 'simulated',
-      note: '代码执行功能需要沙箱后端支持。',
-      code: args.code || '',
-    })
+  // ─── Graphify 知识图谱 ───
+  if (name === 'build_knowledge_graph' || name === 'graphify_build') {
+    try {
+      const form = new FormData()
+      form.append('backend', String(args.backend || 'claude'))
+      if (args.api_key) form.append('api_key', String(args.api_key))
+      const res = await fetch(OFFICE_API_BASE.replace('/office', '/graphify/build'), { method: 'POST', body: form })
+      return JSON.stringify(await res.json())
+    } catch (err) {
+      return JSON.stringify({ status: 'error', error: (err as Error).message })
+    }
+  }
+
+  if (name === 'query_knowledge_graph' || name === 'graphify_query') {
+    try {
+      const form = new FormData()
+      form.append('question', String(args.question || args.query || ''))
+      if (args.graph_file) form.append('graph_file', String(args.graph_file))
+      const res = await fetch(OFFICE_API_BASE.replace('/office', '/graphify/query'), { method: 'POST', body: form })
+      return JSON.stringify(await res.json())
+    } catch (err) {
+      return JSON.stringify({ status: 'error', error: (err as Error).message })
+    }
   }
 
   // 内置工具：文件读取
@@ -283,6 +399,118 @@ function buildToolCalls(accum: Map<number, { id: string; name: string; args: str
     }))
 }
 
+// ─── 上下文自动压缩 (MEM1 记忆飞轮) ───
+
+/**
+ * autoCompressIfNeeded — 当 Token 水位超 85% 时自动触发
+ *
+ * 策略 (Context-Engineering / MEM1 论文的简化实现):
+ * 1. 保留: System Prompt + 最近 N 轮对话 (绝对不碰)
+ * 2. 压缩: 中间的旧对话 → 快速模型摘要 → 存入知识库 Wiki
+ * 3. 替换: 旧对话从 messages 中移除，以 <history_summary> 代替
+ */
+async function autoCompressIfNeeded(agentId: string, vaultId?: string, sessionId?: string) {
+  if (!vaultId) return
+
+  const totalChars = messages.value.reduce((s, m) => s + m.content.length, 0)
+  const estimatedTokens = Math.ceil(totalChars / 2.5)
+
+  // 还没到红线，跳过
+  if (estimatedTokens < MAX_CONTEXT_TOKENS * COMPRESS_THRESHOLD) return
+
+  // 太短没必要压
+  if (messages.value.length <= KEEP_RECENT_MESSAGES + 2) return
+
+  const oldMessages = messages.value.slice(0, -KEEP_RECENT_MESSAGES)
+  const recentMessages = messages.value.slice(-KEEP_RECENT_MESSAGES)
+
+  // ─── Step 1: 把旧对话存入 useBrain 的 raw/ (为后续 Wiki 编译备料) ───
+  const oldText = oldMessages
+    .filter(m => m.role !== 'system')
+    .map(m => `${m.role}: ${m.content}`)
+    .join('\n')
+    .slice(0, 8000)
+
+  await ingestConversation(agentId || 'general', oldText, {
+    vaultId,
+    sessionId,
+    sourceMessageIds: oldMessages.map(m => m.id),
+  })
+
+  // ─── Step 2: 快速模型生成摘要 ───
+  let summary = ''
+  try {
+    const config = await resolveApiConfig()
+    const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
+      method: 'POST',
+      headers: buildHeaders(config),
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        messages: [
+          {
+            role: 'system',
+            content: '你是上下文压缩专家。将以下对话压缩为一份精炼的状态摘要(300字以内)。\n\n规则：\n1. 保留所有关键决策、人名、数字、设定要点\n2. 用结构化列表组织\n3. 标注每个要点属于哪个主题\n4. 输出纯中文摘要，不要任何前缀说明',
+          },
+          { role: 'user', content: oldText },
+        ],
+        max_tokens: 600,
+        temperature: 0.2,
+        stream: false,
+      }),
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      summary = data.choices?.[0]?.message?.content || ''
+    }
+  } catch (e) {
+    console.warn('[Context Compress] 摘要生成失败，降级为截断模式:', e)
+  }
+
+  // 降级：如果 API 失败，手动截取关键句
+  if (!summary) {
+    summary = oldMessages
+      .filter(m => m.role === 'assistant')
+      .map(m => m.content.slice(0, 100))
+      .slice(-5)
+      .join('\n')
+  }
+
+  // ─── Step 3: 存入知识库文件 (Col2 知识库 Tab) ───
+  try {
+    const fileStore = useFileStore()
+    const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    const dateStr = new Date().toLocaleDateString('zh-CN')
+    await fileStore.addFile({
+      category: 'knowledge',
+      vaultId,
+      kind: 'summary',
+      sourceSessionId: sessionId,
+      sourceMessageIds: oldMessages.map(m => m.id),
+      name: `记忆折叠_${dateStr}_${timeStr}`,
+      content: `# 上下文压缩摘要\n\n> 压缩时间: ${new Date().toLocaleString('zh-CN')}\n> 搭子: ${agentId || '通用'}\n> 压缩前消息数: ${oldMessages.length}\n\n${summary}`,
+      mimeType: 'text/markdown',
+      size: summary.length,
+      metadata: { type: 'context_compression', agentId, compressedAt: Date.now() },
+    })
+  } catch (e) {
+    console.warn('[Context Compress] 知识库存储失败:', e)
+  }
+
+  // ─── Step 4: 替换旧消息为摘要系统消息 ───
+  messages.value = [
+    {
+      id: createMessageId('system'),
+      role: 'system' as const,
+      content: `<history_summary>\n${summary}\n</history_summary>`,
+      timestamp: Date.now(),
+    },
+    ...recentMessages,
+  ]
+
+  console.log(`[Context Compress] 压缩 ${oldMessages.length} 条旧消息 → 摘要 ${summary.length} 字，Token 水位重置`)
+}
+
 // ─── useChat composable ───
 
 export function useChat() {
@@ -300,6 +528,8 @@ export function useChat() {
       systemPrompt?: string
       agentId?: string
       agentName?: string
+      vaultId?: string
+      sessionId?: string
       images?: string[]  // 图片附件（base64 data URLs）
       files?: Array<{ name: string; content: string }>  // 文本文件附件
     } = {}
@@ -337,6 +567,9 @@ export function useChat() {
 
     if (!isCurrentRun(runId)) return
 
+    // 1.5 上下文自动压缩 (MEM1 记忆飞轮)
+    await autoCompressIfNeeded(options.agentId || '', options.vaultId, options.sessionId)
+
     // 2. 添加用户消息（包含附件）
     const userMsg: ChatMessage = {
       id: createMessageId('user'),
@@ -344,14 +577,18 @@ export function useChat() {
       content: userText.trim(),
       timestamp: Date.now(),
       agentId: options.agentId,
+      vaultId: options.vaultId,
       images: options.images,
       files: options.files,
     }
     messages.value.push(userMsg)
 
-    // 3. 知识回忆
+    // 3. 知识回忆（只读取当前 Vault 的 IndexedDB Knowledge + 钉选）
     let systemPrompt = options.systemPrompt || '你是韭菜盒子的AI助手，请用中文回复。'
-    const recalled = recallKnowledge(userText, options.agentId)
+    const recalled = await recallKnowledge(userText, {
+      vaultId: options.vaultId,
+      skillId: options.agentId,
+    })
     if (recalled) {
       systemPrompt += recalled
     }
@@ -389,7 +626,7 @@ export function useChat() {
   async function runToolLoop(
     config: ApiConfig,
     systemPrompt: string,
-    options: { agentId?: string; agentName?: string },
+    options: { agentId?: string; agentName?: string; vaultId?: string },
     runId: number,
   ) {
     const MAX_TOOL_ROUNDS = 10
@@ -410,6 +647,7 @@ export function useChat() {
         timestamp: Date.now(),
         agentId: options.agentId,
         agentName: options.agentName,
+        vaultId: options.vaultId,
       }
       messages.value.push(aiMsg)
       const aiMsgId = aiMsg.id
@@ -545,6 +783,7 @@ export function useChat() {
               role: 'tool',
               content: toolResult,
               timestamp: Date.now(),
+              vaultId: options.vaultId,
               toolCallId: call.id,
               toolName: call.function.name,
             }
@@ -560,6 +799,10 @@ export function useChat() {
         if (isCurrentRun(runId)) {
           setPhase('done')
           currentToolProgress.value = null
+        }
+        const finalMsg = findAssistantMessage(runId, aiMsgId)
+        if (finalMsg) {
+          await ingestAssistantOutput(finalMsg, options)
         }
         finishController(runId, controller)
         return

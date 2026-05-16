@@ -7,7 +7,8 @@
  * ├─────────────────┼──────────────────────────────┼─────────────────────────────────┤
  * │ gpt-image-2     │ POST /v1/images/generations   │ 同步（无需轮询）                  │
  * │ gpt-image-2 编辑│ POST /v1/images/edits         │ 同步                             │
- * │ grok / veo      │ POST /v1/video/generations     │ GET /v1/video/generations/:id    │
+ * │ grok            │ POST /v2/videos/generations    │ GET /v2/videos/generations/:id   │
+ * │ veo             │ POST /v1/video/generations     │ GET /v1/video/generations/:id    │
  * │ seedance        │ POST /v1/videos                │ GET /v1/videos/:id               │
  * │ suno            │ POST /suno/submit/music         │ GET /suno/fetch/:id              │
  * └─────────────────┴──────────────────────────────┴─────────────────────────────────┘
@@ -37,6 +38,9 @@ export interface MediaResult {
   url: string
   type: 'image' | 'video' | 'audio'
   taskId?: string
+  /** 上游轮询路径（用于任务恢复） */
+  pollUrl?: string
+  pollKind?: 'image' | 'video' | 'audio'
 }
 
 // ---- API Config ----
@@ -280,9 +284,9 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mime })
 }
 
-// ---- Unified Task Poller ----
+// ---- Unified Task Poller (exported for task recovery) ----
 
-async function pollTask(
+export async function pollTask(
   pollPath: string,
   kind: 'image' | 'video' | 'audio',
   onProgress?: (elapsed: number, status: string) => void,
@@ -457,7 +461,8 @@ export async function generateVideo(
       if (taskId) mediaUrl = await pollTask(`/v1/videos/${taskId}`, 'video', onProgress, 3000, 15000)
     }
     if (!mediaUrl) throw new Error('Seedance 视频生成失败')
-    return { url: mediaUrl, type: 'video' }
+    const seedTaskId = extractTaskId(data)
+    return { url: mediaUrl, type: 'video', taskId: seedTaskId, pollUrl: seedTaskId ? `/v1/videos/${seedTaskId}` : undefined, pollKind: 'video' as const }
   }
 
   // ── Grok 系列 → /v2/videos/generations (文档: T8grok.md 行119-236) ──
@@ -468,29 +473,13 @@ export async function generateVideo(
     if (duration) body.duration = Number(duration)
 
     const { imageUrls, imageUrl: singleImageUrl } = params
-    
-    // ★ 关键：images 参数需要 URL，不能是 base64（会导致 HTTP2 协议错误）
+
+    // T8grok.md: images 参数为 string[]，支持 URL 和 base64 data URI
+    // 不再依赖 /v1/files 上传（NewAPI 不支持该端点）
     if (imageUrls && imageUrls.length > 0) {
-      onProgress?.(0, `上传参考图 (0/${imageUrls.length})...`)
-      const uploaded: string[] = []
-      for (let i = 0; i < imageUrls.length; i++) {
-        const url = imageUrls[i]
-        if (url.startsWith('data:')) {
-          onProgress?.(0, `上传参考图 (${i+1}/${imageUrls.length})...`)
-          uploaded.push(await uploadImage(url))
-        } else {
-          uploaded.push(url)
-        }
-      }
-      body.images = uploaded
+      body.images = imageUrls
     } else if (singleImageUrl) {
-      // 单图兼容
-      if (singleImageUrl.startsWith('data:')) {
-        onProgress?.(0, '上传参考图...')
-        body.images = [await uploadImage(singleImageUrl)]
-      } else {
-        body.images = [singleImageUrl]
-      }
+      body.images = [singleImageUrl]
     }
 
     onProgress?.(0, '提交任务...')
@@ -501,7 +490,7 @@ export async function generateVideo(
     // 轮询 /v2/videos/generations/:id (文档行256-296)
     const mediaUrl = await pollTask(`/v2/videos/generations/${taskId}`, 'video', onProgress, 3000, 15000)
     if (!mediaUrl) throw new Error('Grok 视频生成失败')
-    return { url: mediaUrl, type: 'video' }
+    return { url: mediaUrl, type: 'video', taskId, pollUrl: `/v2/videos/generations/${taskId}`, pollKind: 'video' as const }
   }
 
   // ── Veo / 其他 → /v1/video/generations ──
@@ -518,7 +507,8 @@ export async function generateVideo(
     if (taskId) mediaUrl = await pollTask(`/v1/video/generations/${taskId}`, 'video', onProgress, 3000, 15000)
   }
   if (!mediaUrl) throw new Error('视频生成失败')
-  return { url: mediaUrl, type: 'video' }
+  const veoTaskId = extractTaskId(data)
+  return { url: mediaUrl, type: 'video', taskId: veoTaskId, pollUrl: veoTaskId ? `/v1/video/generations/${veoTaskId}` : undefined, pollKind: 'video' as const }
 }
 
 /**

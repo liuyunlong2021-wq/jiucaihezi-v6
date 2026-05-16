@@ -12,20 +12,26 @@
 import { ref, computed, onBeforeUnmount } from 'vue'
 import ActivityRail from '@/components/rail/ActivityRail.vue'
 import FileTreePanel from '@/components/filetree/FileTreePanel.vue'
-import HistoryPanel from '@/components/session/HistoryPanel.vue'
 import ChatPanel from '@/components/chat/ChatPanel.vue'
 import SettingsPanel from '@/components/settings/SettingsPanel.vue'
 import AgentEditDialog from '@/components/agents/AgentEditDialog.vue'
 import AgentWizard from '@/components/agents/AgentWizard.vue'
 import BrainPanel from '@/components/brain/BrainPanel.vue'
+import VaultWizard from '@/components/vault/VaultWizard.vue'
 import EvolutionDiff from '@/components/agents/EvolutionDiff.vue'
 import EditorPanel from '@/components/editor/EditorPanel.vue'
 import CreationPanel from '@/components/creation/CreationPanel.vue'
 import { useAgentStore } from '@/stores/agentStore'
+import { useVaultStore } from '@/stores/vaultStore'
 import { onEvent } from '@/utils/eventBus'
 import type { SkillConfig } from '@/types/skill'
+import { VAULT_TEMPLATES } from '@/data/vaultTemplates'
+import type { VaultTemplate } from '@/data/vaultTemplates'
+import type { Vault } from '@/stores/vaultStore'
+import { feedbackSkillFromVault } from '@/composables/useSkillFeedback'
 
 const agentStore = useAgentStore()
+const vaultStoreWH = useVaultStore()
 
 // ─── Col 5 当前面板 ───
 const rightPanel = ref<string>('creation')
@@ -50,15 +56,13 @@ onBeforeUnmount(() => {
   onResizeEnd()
 })
 
-// Col 2 / Col 3 / Col 5 隐藏
+// Col 2 / Col 5 隐藏
 const isFileTreeCollapsed = ref(false)  // 默认显示
-const isHistoryCollapsed = ref(false)   // 默认显示
 const isRightPanelCollapsed = computed(() => !rightPanel.value)
 
 // 宽度
 const fileTreeWidth = ref(280)  // 足够显示5个tab
-const historyWidth = ref(200)
-const chatWidth = ref(400)
+const chatWidth = ref(450)
 const rightPanelWidth = ref(420)
 
 function openEvolution(skill: SkillConfig) {
@@ -148,6 +152,118 @@ function startChatWithAgent(agentId: string) {
   rightPanel.value = ''
 }
 
+// ─── 用知识库反哺搭子 ───
+const feedbackLoading = ref(false)
+const feedbackResult = ref<{ skillName: string; changeSummary: string; newContent: string; skillId: string } | null>(null)
+
+async function runSkillFeedback() {
+  const skill = cardMenu.value.skill
+  cardMenu.value.show = false
+  if (!skill) return
+  const vaultId = vaultStoreWH.activeVaultId
+  if (!vaultId) {
+    alert('请先绑定知识库')
+    return
+  }
+  feedbackLoading.value = true
+  try {
+    const result = await feedbackSkillFromVault(skill, vaultId)
+    if (result.suggestions.length === 0) {
+      alert('知识库中没有可用于反哺的内容')
+      feedbackLoading.value = false
+      return
+    }
+    feedbackResult.value = {
+      skillName: skill.name,
+      changeSummary: result.changeSummary,
+      newContent: result.newSkillContent,
+      skillId: skill.id,
+    }
+  } catch (e: any) {
+    alert('反哺失败: ' + (e?.message || '请重试'))
+  }
+  feedbackLoading.value = false
+}
+
+function applyFeedback() {
+  if (!feedbackResult.value) return
+  agentStore.updateSkill(feedbackResult.value.skillId, {
+    skillContent: feedbackResult.value.newContent,
+    version: (agentStore.agents.find(a => a.id === feedbackResult.value!.skillId)?.version || 1) + 1,
+  })
+  feedbackResult.value = null
+}
+
+function dismissFeedback() {
+  feedbackResult.value = null
+}
+
+// ─── 知识库仓库 ───
+const vaultFilter = ref('')
+const vaultCardMenu = ref({ show: false, x: 0, y: 0, vault: null as Vault | null })
+
+const sortedMyVaults = computed(() => {
+  const q = vaultFilter.value.toLowerCase()
+  let list = vaultStoreWH.vaults.filter(v => v.status === 'active')
+  if (q) list = list.filter(v =>
+    v.name.toLowerCase().includes(q) ||
+    (v.oneLineDesc || v.description || '').toLowerCase().includes(q) ||
+    (v.keywords || []).some(k => k.toLowerCase().includes(q))
+  )
+  return list
+})
+
+const availableTemplates = computed(() => {
+  const existing = new Set(vaultStoreWH.vaults.map(v => v.template).filter(Boolean))
+  return VAULT_TEMPLATES.filter(t => !existing.has(t.id))
+})
+
+function selectVaultFromWarehouse(vaultId: string) {
+  vaultStoreWH.setActiveVault(vaultId)
+  rightPanel.value = ''
+}
+
+function openVaultCardMenu(e: MouseEvent, vault: Vault) {
+  e.stopPropagation()
+  vaultCardMenu.value = { show: true, x: e.clientX, y: e.clientY, vault }
+}
+
+function editVaultField(field: 'name' | 'keywords' | 'oneLineDesc') {
+  const vault = vaultCardMenu.value.vault
+  vaultCardMenu.value.show = false
+  if (!vault) return
+  const labels: Record<string, string> = { name: '知识库名称', keywords: '关键词（逗号分隔）', oneLineDesc: '一句话介绍' }
+  const current = field === 'keywords' ? (vault.keywords || []).join(', ') : (vault[field] || '')
+  const newVal = prompt(labels[field], current)
+  if (newVal === null) return
+  if (field === 'keywords') {
+    vaultStoreWH.updateVault(vault.id, { keywords: newVal.split(/[,，]/).map(s => s.trim()).filter(Boolean) })
+  } else {
+    vaultStoreWH.updateVault(vault.id, { [field]: newVal.trim() })
+  }
+}
+
+function deleteVaultFromWarehouse() {
+  const vault = vaultCardMenu.value.vault
+  vaultCardMenu.value.show = false
+  if (!vault) return
+  if (!confirm(`确定删除知识库「${vault.name}」？此操作不可撤销。`)) return
+  vaultStoreWH.deleteVault(vault.id)
+}
+
+async function addTemplateVault(tpl: VaultTemplate) {
+  await vaultStoreWH.createVault(tpl.name, tpl.type, {
+    description: tpl.oneLineDesc,
+    oneLineDesc: tpl.oneLineDesc,
+    keywords: [...tpl.keywords],
+    template: tpl.id,
+    icon: tpl.icon,
+    claudeMd: tpl.claudeMd,
+    rawFolders: [...tpl.rawFolders],
+    wikiFolders: [...tpl.wikiFolders],
+  })
+}
+
 // ─── 右键菜单 ───
 const contextMenu = ref({ show: false, x: 0, y: 0, agent: null as SkillConfig | null, isPreset: false })
 
@@ -196,33 +312,46 @@ function deleteContextAgent() {
 let resizeTarget = ''
 let resizeStartX = 0
 let resizeStartW = 0
+let rafId: number | null = null
+let latestClientX = 0
 
-function onResizeStart(e: MouseEvent, target: 'filetree' | 'history' | 'chat' | 'right') {
+function onResizeStart(e: PointerEvent, target: 'filetree' | 'history' | 'chat' | 'right') {
   resizeTarget = target
   resizeStartX = e.clientX
   resizeStartW = target === 'filetree' ? fileTreeWidth.value
-    : target === 'history' ? historyWidth.value
     : target === 'chat' ? chatWidth.value
     : rightPanelWidth.value
-  document.addEventListener('mousemove', onResizeMove)
-  document.addEventListener('mouseup', onResizeEnd)
+  
+  const el = e.currentTarget as HTMLElement
+  if (el && el.setPointerCapture) el.setPointerCapture(e.pointerId)
+  
+  document.addEventListener('pointermove', onResizeMove)
+  document.addEventListener('pointerup', onResizeEnd)
+  document.addEventListener('pointercancel', onResizeEnd)
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
 }
 
-function onResizeMove(e: MouseEvent) {
-  const delta = e.clientX - resizeStartX
-  if (resizeTarget === 'filetree') fileTreeWidth.value = Math.max(120, Math.min(400, resizeStartW + delta))
-  else if (resizeTarget === 'history') historyWidth.value = Math.max(120, Math.min(400, resizeStartW + delta))
-  else if (resizeTarget === 'chat') chatWidth.value = Math.max(280, Math.min(700, resizeStartW + delta))
-  else rightPanelWidth.value = Math.max(200, Math.min(800, resizeStartW - delta))
+function onResizeMove(e: PointerEvent) {
+  latestClientX = e.clientX
+  if (!rafId) {
+    rafId = requestAnimationFrame(() => {
+      const delta = latestClientX - resizeStartX
+      if (resizeTarget === 'filetree') fileTreeWidth.value = Math.max(120, Math.min(400, resizeStartW + delta))
+      else if (resizeTarget === 'chat') chatWidth.value = Math.max(280, Math.min(700, resizeStartW + delta))
+      else rightPanelWidth.value = Math.max(200, Math.min(800, resizeStartW - delta))
+      rafId = null
+    })
+  }
 }
 
-function onResizeEnd() {
-  document.removeEventListener('mousemove', onResizeMove)
-  document.removeEventListener('mouseup', onResizeEnd)
+function onResizeEnd(e?: PointerEvent) {
+  document.removeEventListener('pointermove', onResizeMove)
+  document.removeEventListener('pointerup', onResizeEnd)
+  document.removeEventListener('pointercancel', onResizeEnd)
   document.body.style.cursor = ''
   document.body.style.userSelect = ''
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null }
 }
 </script>
 
@@ -235,20 +364,15 @@ function onResizeEnd() {
     <div class="ws-col ws-filetree" :class="{ collapsed: isFileTreeCollapsed }"
          :style="{ width: isFileTreeCollapsed ? '0px' : fileTreeWidth + 'px' }">
       <FileTreePanel v-show="!isFileTreeCollapsed" />
-      <div class="ws-resize-handle" @mousedown.prevent="onResizeStart($event, 'filetree')" />
+      <div class="ws-resize-handle" @pointerdown.prevent="onResizeStart($event, 'filetree')" />
     </div>
 
-    <!-- Col 3: History — 对话记录（可隐藏） -->
-    <div class="ws-col ws-history" :class="{ collapsed: isHistoryCollapsed }"
-         :style="{ width: isHistoryCollapsed ? '0px' : historyWidth + 'px' }">
-      <HistoryPanel v-show="!isHistoryCollapsed" />
-      <div class="ws-resize-handle" @mousedown.prevent="onResizeStart($event, 'history')" />
-    </div>
+
 
     <!-- Col 4: ChatPanel — ★ 始终显示 ★ -->
     <div class="ws-col ws-chat" :style="{ width: chatWidth + 'px' }">
       <ChatPanel />
-      <div class="ws-resize-handle" @mousedown.prevent="onResizeStart($event, 'chat')" />
+      <div class="ws-resize-handle" @pointerdown.prevent="onResizeStart($event, 'chat')" />
     </div>
 
     <!-- Col 5: 右侧面板 — Rail 切换（可隐藏） -->
@@ -346,13 +470,117 @@ function onResizeEnd() {
                 <button class="ws-card-menu-item" @click="editCardField('oneLineDesc')">
                   <span class="mso">short_text</span> 修改一句话介绍
                 </button>
+                <div style="height:1px;background:var(--line);margin:4px 0"></div>
+                <button class="ws-card-menu-item" @click="runSkillFeedback" :disabled="feedbackLoading">
+                  <span class="mso">upgrade</span> {{ feedbackLoading ? '反哺中...' : '用知识库反哺搭子' }}
+                </button>
+              </div>
+            </div>
+          </Teleport>
+
+          <!-- 反哺结果确认弹窗 -->
+          <Teleport to="body">
+            <div v-if="feedbackResult" class="ws-feedback-overlay" @click.self="dismissFeedback">
+              <div class="ws-feedback-dialog">
+                <h4>反哺结果：{{ feedbackResult.skillName }}</h4>
+                <p class="ws-feedback-summary">{{ feedbackResult.changeSummary }}</p>
+                <div class="ws-feedback-actions">
+                  <button class="ws-feedback-btn apply" @click="applyFeedback">采用升级</button>
+                  <button class="ws-feedback-btn" @click="dismissFeedback">放弃</button>
+                </div>
               </div>
             </div>
           </Teleport>
         </div>
 
+
+
         <!-- 长脑子 -->
         <BrainPanel v-else-if="rightPanel === 'brain'" @close="rightPanel = ''" />
+        <VaultWizard v-else-if="rightPanel === 'vaultCreate'" />
+
+        <!-- 知识库仓库 — 两区布局（镜像搭子仓库） -->
+        <div v-else-if="rightPanel === 'vaultWarehouse'" class="ws-warehouse">
+          <div class="ws-warehouse-head">
+            <h3>知识库仓库</h3>
+            <div class="ws-wh-search-mini">
+              <span class="mso" style="font-size:14px;color:var(--ink3)">search</span>
+              <input v-model="vaultFilter" type="text" placeholder="搜索..." class="ws-wh-search-input" />
+            </div>
+          </div>
+
+          <div class="ws-wh-scroll">
+            <!-- 我的知识库区 -->
+            <div class="ws-wh-section">
+              <div class="ws-wh-section-title">我的知识库</div>
+              <div class="ws-wh-list">
+                <div v-for="v in sortedMyVaults" :key="v.id" class="ws-wh-card2"
+                     :class="{ active: vaultStoreWH.activeVaultId === v.id }"
+                     @click="selectVaultFromWarehouse(v.id)">
+                  <div class="ws-wh-card2-head">
+                    <span class="ws-wh-card2-name">
+                      <span v-if="v.icon" class="mso" style="font-size:14px;margin-right:4px">{{ v.icon }}</span>
+                      {{ v.name }}
+                    </span>
+                    <span class="ws-wh-card2-count">{{ v.callCount || '' }}</span>
+                    <button class="ws-wh-card2-menu" @click.stop="openVaultCardMenu($event, v)">
+                      <span class="mso">more_horiz</span>
+                    </button>
+                  </div>
+                  <div class="ws-wh-card2-desc">{{ v.oneLineDesc || v.description || v.type }}</div>
+                  <div class="ws-wh-card2-tags" v-if="v.keywords?.length">
+                    <span v-for="k in v.keywords.slice(0, 4)" :key="k" class="ws-wh-tag">{{ k }}</span>
+                  </div>
+                </div>
+                <div v-if="sortedMyVaults.length === 0" class="ws-wh-empty2">
+                  还没有知识库，点击左侧「创建知识库」或从下方模板添加
+                </div>
+              </div>
+            </div>
+
+            <!-- 内置知识库模板区 -->
+            <div class="ws-wh-section" v-if="availableTemplates.length > 0">
+              <div class="ws-wh-section-title">内置模板</div>
+              <div class="ws-wh-list">
+                <div v-for="tpl in availableTemplates" :key="tpl.id" class="ws-wh-card2">
+                  <div class="ws-wh-card2-head">
+                    <span class="ws-wh-card2-name">
+                      <span class="mso" style="font-size:14px;margin-right:4px">{{ tpl.icon }}</span>
+                      {{ tpl.name }}
+                    </span>
+                  </div>
+                  <div class="ws-wh-card2-desc">{{ tpl.oneLineDesc }}</div>
+                  <div class="ws-wh-card2-tags">
+                    <span v-for="k in tpl.keywords.slice(0, 4)" :key="k" class="ws-wh-tag">{{ k }}</span>
+                  </div>
+                  <button class="ws-wh-card2-action add-my" @click.stop="addTemplateVault(tpl)">
+                    <span class="mso" style="font-size:13px">add</span> 添加到我的知识库
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 知识库卡片三点菜单 -->
+          <Teleport to="body">
+            <div v-if="vaultCardMenu.show" class="ws-card-menu-overlay" @click="vaultCardMenu.show = false">
+              <div class="ws-card-menu" :style="{ top: vaultCardMenu.y + 'px', left: vaultCardMenu.x + 'px' }">
+                <button class="ws-card-menu-item" @click="editVaultField('name')">
+                  <span class="mso">edit</span> 修改知识库名
+                </button>
+                <button class="ws-card-menu-item" @click="editVaultField('keywords')">
+                  <span class="mso">label</span> 修改关键词
+                </button>
+                <button class="ws-card-menu-item" @click="editVaultField('oneLineDesc')">
+                  <span class="mso">short_text</span> 修改一句话介绍
+                </button>
+                <button class="ws-card-menu-item" style="color:#dc2626" @click="deleteVaultFromWarehouse">
+                  <span class="mso">delete</span> 删除知识库
+                </button>
+              </div>
+            </div>
+          </Teleport>
+        </div>
 
         <!-- 编辑区 -->
         <EditorPanel v-else-if="rightPanel === 'editor'" />
@@ -365,7 +593,7 @@ function onResizeEnd() {
 
       </div>
       <div v-if="!isRightPanelCollapsed" class="ws-resize-handle ws-resize-left"
-           @mousedown.prevent="onResizeStart($event, 'right')" />
+           @pointerdown.prevent="onResizeStart($event, 'right')" />
     </div>
 
     <!-- 右键菜单（Teleport 到 body，不打断 v-if 链） -->
@@ -406,11 +634,10 @@ function onResizeEnd() {
 }
 
 /* Generic column */
-.ws-col { position: relative; flex-shrink: 0; overflow: hidden; }
+.ws-col { position: relative; flex-shrink: 0; overflow: hidden; container-type: inline-size; }
 .ws-col.collapsed { width: 0 !important; border: none; }
 
 .ws-filetree { border-right: 1px solid var(--border); transition: width .2s; }
-.ws-history { border-right: 1px solid var(--border); transition: width .2s; }
 .ws-chat { min-width: 280px; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
 .ws-right { flex: 1; min-width: 0; transition: width .2s; }
 .ws-right.collapsed { flex: 0; }
@@ -470,7 +697,7 @@ function onResizeEnd() {
 .ws-wh-preset-toggle.on { background: var(--olive); }
 .ws-wh-preset-toggle-dot {
   width: 14px; height: 14px; border-radius: 50%;
-  background: #fff; position: absolute; top: 2px; left: 2px;
+  background: var(--paper); position: absolute; top: 2px; left: 2px;
   transition: transform .25s;
 }
 .ws-wh-preset-toggle.on .ws-wh-preset-toggle-dot { transform: translateX(14px); }
@@ -519,7 +746,7 @@ function onResizeEnd() {
 .ws-card-menu-overlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.2); }
 .ws-card-menu {
   position: fixed; min-width: 180px; padding: 8px;
-  background: #fff; border: 2px solid #ddd;
+  background: var(--paper); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.3);
   z-index: 10000;
 }
@@ -561,4 +788,25 @@ function onResizeEnd() {
   border-radius: 16px; overflow: hidden; background: var(--paper);
   box-shadow: 0 8px 40px rgba(0,0,0,.2);
 }
+
+/* 反哺结果弹窗 */
+.ws-feedback-overlay {
+  position: fixed; inset: 0; z-index: 9998;
+  background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center;
+}
+.ws-feedback-dialog {
+  width: 400px; max-width: 90vw; padding: 24px;
+  border-radius: 16px; background: var(--paper);
+  box-shadow: 0 8px 40px rgba(0,0,0,.2);
+}
+.ws-feedback-dialog h4 { font-size: 16px; font-weight: 700; color: var(--ink); margin: 0 0 8px; }
+.ws-feedback-summary { font-size: 13px; color: var(--ink2); line-height: 1.6; margin: 0 0 16px; }
+.ws-feedback-actions { display: flex; gap: 8px; }
+.ws-feedback-btn {
+  flex: 1; padding: 10px; border-radius: 10px; font-size: 13px; font-weight: 700;
+  cursor: pointer; font-family: inherit; border: 1px solid var(--line);
+  background: var(--surface-alt); color: var(--ink2); transition: all .15s;
+}
+.ws-feedback-btn.apply { background: var(--olive); color: #fff; border-color: var(--olive); }
+.ws-feedback-btn.apply:hover { filter: brightness(1.1); }
 </style>

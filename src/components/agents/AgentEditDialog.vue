@@ -26,7 +26,7 @@ const triggers = ref('')
 const skillContent = ref('')
 
 // ─── Tab 切换 ───
-type EditTab = 'manual' | 'ai'
+type EditTab = 'manual' | 'ai' | 'test'
 const activeTab = ref<EditTab>('manual')
 
 // ─── AI 重写状态（移植自 V4 _agentRewriteState） ───
@@ -156,6 +156,41 @@ function acceptRewrite() {
   rewriteRequest.value = ''
   proposedContent.value = ''
 }
+
+// ─── 测试功能 ───
+const testInput = ref('')
+const testOutput = ref('')
+const isTesting = ref(false)
+
+async function runTest() {
+  if (!testInput.value.trim() || !skillContent.value.trim()) return
+  isTesting.value = true
+  testOutput.value = ''
+  try {
+    const config = await resolveApiConfig()
+    const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
+      method: 'POST',
+      headers: buildHeaders(config),
+      body: JSON.stringify({
+        model: config.model || 'claude-sonnet-4-6',
+        messages: [
+          { role: 'system', content: skillContent.value },
+          { role: 'user', content: testInput.value },
+        ],
+        temperature: 0.4,
+        max_tokens: 2000,
+        stream: false,
+      }),
+    })
+    if (!res.ok) throw new Error(`API ${res.status}`)
+    const data = await res.json()
+    testOutput.value = data.choices?.[0]?.message?.content || '(无输出)'
+  } catch (e: any) {
+    testOutput.value = `错误: ${e.message}`
+  } finally {
+    isTesting.value = false
+  }
+}
 </script>
 
 <template>
@@ -171,6 +206,9 @@ function acceptRewrite() {
           </button>
           <button class="ae-tab" :class="{ active: activeTab === 'ai' }" @click="activeTab = 'ai'">
             <span class="mso" style="font-size:16px">auto_fix_high</span> AI 重写
+          </button>
+          <button class="ae-tab" :class="{ active: activeTab === 'test' }" @click="activeTab = 'test'">
+            <span class="mso" style="font-size:16px">play_circle</span> 测试
           </button>
         </div>
 
@@ -201,6 +239,24 @@ function acceptRewrite() {
               {{ editAgent ? '保存' : '创建' }}
             </button>
           </div>
+        </div>
+
+        <!-- ═══ 测试 Tab ═══ -->
+        <div v-if="activeTab === 'test'">
+          <div class="ae-field">
+            <label>发一条测试消息，看搭子怎么回</label>
+            <textarea v-model="testInput" rows="3" placeholder="输入一条用户消息来测试这个搭子..."></textarea>
+          </div>
+          <div class="ae-actions" style="margin-top:12px;margin-bottom:12px">
+            <button class="ae-btn ae-primary" :disabled="isTesting || !testInput.trim() || !skillContent.trim()" @click="runTest">
+              {{ isTesting ? '测试中...' : '发送测试' }}
+            </button>
+          </div>
+          <div v-if="testOutput" class="ae-test-output">
+            <div class="ae-test-output-title">搭子回复</div>
+            <pre class="ae-test-output-body">{{ testOutput }}</pre>
+          </div>
+          <div v-if="!skillContent.trim()" class="ae-error">请先在「手动编辑」中填写 SKILL.md 内容</div>
         </div>
 
         <!-- ═══ AI 重写 Tab ═══ -->
@@ -354,5 +410,19 @@ function acceptRewrite() {
   color: var(--ink2); white-space: pre-wrap; word-break: break-all;
   max-height: 250px; overflow-y: auto; margin: 0;
   font-family: 'SF Mono', 'Fira Code', monospace;
+}
+/* Test output */
+.ae-test-output {
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+}
+.ae-test-output-title {
+  padding: 6px 10px; font-size: 11px; font-weight: 700;
+  background: rgba(46, 125, 50, 0.08); color: #2e7d32;
+  border-bottom: 1px solid var(--border);
+}
+.ae-test-output-body {
+  padding: 12px; font-size: 13px; line-height: 1.7;
+  color: var(--ink1); white-space: pre-wrap; word-break: break-word;
+  max-height: 300px; overflow-y: auto; margin: 0;
 }
 </style>

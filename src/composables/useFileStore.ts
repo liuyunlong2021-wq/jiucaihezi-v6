@@ -5,10 +5,13 @@
  */
 import { ref } from 'vue'
 import { getAll, setRecord, removeRecord, getRecord } from '@/utils/idb'
+import type { ChatMessage } from '@/composables/useChat'
+import type { SkillConfig } from '@/types/skill'
+import { serializeToSkillMd } from '@/types/skill'
 
 export interface FileEntry {
   id: string
-  category: 'text' | 'image' | 'video' | 'knowledge' | 'skill'
+  category: 'text' | 'image' | 'video' | 'knowledge' | 'skill' | 'history'
   name: string
   content: string
   mimeType: string
@@ -16,6 +19,10 @@ export interface FileEntry {
   createdAt: number
   updatedAt: number
   folderId?: string
+  vaultId?: string
+  kind?: 'raw' | 'summary' | 'page' | 'entity' | 'relation' | 'asset'
+  sourceSessionId?: string
+  sourceMessageIds?: string[]
   skillId?: string
   indexed?: boolean
   topic?: string
@@ -23,83 +30,24 @@ export interface FileEntry {
 }
 
 const STORE = 'documents'
-const BRAIN_WIKI_KEY = 'jc_brain_wiki_v1'
-const BRAIN_INDEX_KEY = 'jc_brain_index_v1'
-const KNOWLEDGE_MIRROR_PREFIX = 'doc_'
-const MAX_MIRRORED_KNOWLEDGE = 250
-const MAX_MIRROR_CONTENT_CHARS = 4000
+const HISTORY_DOC_PREFIX = 'history_'
+const SKILL_FOLDER_PREFIX = 'skill_folder_'
+const SKILL_CORE_PREFIX = 'skill_core_'
 
-interface BrainWikiMirror {
-  id: string
-  skillId: string
-  title: string
-  content: string
-  sources: string[]
-  updatedAt: number
-  topic: string
-  seeAlso: string[]
-  archived: boolean
-  conflicts: string[]
+function toSafeDocId(prefix: string, id: string): string {
+  return prefix + encodeURIComponent(id)
 }
 
-function loadBrainWikiMirror(): BrainWikiMirror[] {
-  try {
-    const raw = localStorage.getItem(BRAIN_WIKI_KEY)
-    const parsed = raw ? JSON.parse(raw) : []
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
+function buildHistoryMarkdown(conversation: any, messages: ChatMessage[]): string {
+  const title = conversation.title || '未命名对话'
+  const parts = [`# ${title}`]
+  for (const msg of messages) {
+    const role = msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : msg.role
+    const body = String(msg.content || '').trim()
+    if (!body) continue
+    parts.push(`**${role}**:\n${body}`)
   }
-}
-
-function saveBrainWikiMirror(pages: BrainWikiMirror[]) {
-  const active = pages
-    .filter(p => p && p.id)
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-  const trimmed = active.slice(0, MAX_MIRRORED_KNOWLEDGE)
-  localStorage.setItem(BRAIN_WIKI_KEY, JSON.stringify(trimmed))
-  localStorage.setItem(BRAIN_INDEX_KEY, JSON.stringify(trimmed.map(p => ({
-    pageId: p.id,
-    title: p.title,
-    topic: p.topic || 'general',
-    summary: p.content.slice(0, 100),
-    updatedAt: p.updatedAt,
-  }))))
-}
-
-function mirrorKnowledgeToBrain(file: FileEntry) {
-  if (file.category !== 'knowledge') return
-  try {
-    const pages = loadBrainWikiMirror()
-    const mirrorId = KNOWLEDGE_MIRROR_PREFIX + file.id
-    const page: BrainWikiMirror = {
-      id: mirrorId,
-      skillId: file.skillId || 'general',
-      title: file.name || '知识点',
-      content: (file.content || '').slice(0, MAX_MIRROR_CONTENT_CHARS),
-      sources: [file.id],
-      updatedAt: file.updatedAt || Date.now(),
-      topic: file.topic || file.skillId || 'general',
-      seeAlso: [],
-      archived: false,
-      conflicts: [],
-    }
-    const next = pages.filter(p => p.id !== mirrorId)
-    next.push(page)
-    saveBrainWikiMirror(next)
-  } catch (e) {
-    console.warn('[FileStore] 知识镜像同步失败:', e)
-  }
-}
-
-function removeKnowledgeMirror(fileId: string) {
-  try {
-    const mirrorId = KNOWLEDGE_MIRROR_PREFIX + fileId
-    const next = loadBrainWikiMirror().filter(p => p.id !== mirrorId)
-    saveBrainWikiMirror(next)
-  } catch (e) {
-    console.warn('[FileStore] 知识镜像删除失败:', e)
-  }
+  return parts.join('\n\n---\n\n')
 }
 
 export function useFileStore() {
@@ -115,9 +63,9 @@ export function useFileStore() {
     loading.value = false
   }
 
-  async function loadByCategory(category: FileEntry['category']): Promise<FileEntry[]> {
+  async function loadByCategory(category: FileEntry['category'], vaultId?: string | null): Promise<FileEntry[]> {
     const all = await getAll(STORE) as FileEntry[]
-    return all.filter(f => f.category === category)
+    return all.filter(f => f.category === category && (vaultId === undefined || f.vaultId === (vaultId || undefined)))
   }
 
   async function loadBySkillId(skillId: string): Promise<FileEntry[]> {
@@ -125,9 +73,14 @@ export function useFileStore() {
     return all.filter(f => f.skillId === skillId)
   }
 
-  async function loadUnindexed(): Promise<FileEntry[]> {
+  async function loadByVault(vaultId: string): Promise<FileEntry[]> {
     const all = await getAll(STORE) as FileEntry[]
-    return all.filter(f => f.category === 'knowledge' && f.indexed === false)
+    return all.filter(f => f.vaultId === vaultId)
+  }
+
+  async function loadUnindexed(vaultId?: string): Promise<FileEntry[]> {
+    const all = await getAll(STORE) as FileEntry[]
+    return all.filter(f => f.category === 'knowledge' && f.indexed === false && (vaultId ? f.vaultId === vaultId : true))
   }
 
   async function addFile(entry: Omit<FileEntry, 'id' | 'createdAt' | 'updatedAt'>): Promise<FileEntry> {
@@ -138,7 +91,6 @@ export function useFileStore() {
       updatedAt: Date.now(),
     }
     await setRecord(STORE, file)
-    if (file.category === 'knowledge') mirrorKnowledgeToBrain(file)
     return file
   }
 
@@ -147,13 +99,117 @@ export function useFileStore() {
     if (!existing) return
     const updated = { ...existing, ...patch, updatedAt: Date.now() }
     await setRecord(STORE, updated)
-    if (updated.category === 'knowledge') mirrorKnowledgeToBrain(updated)
   }
 
   async function deleteFile(id: string) {
-    const existing = await getRecord(STORE, id) as FileEntry | undefined
     await removeRecord(STORE, id)
-    if (existing?.category === 'knowledge') removeKnowledgeMirror(id)
+  }
+
+  async function syncHistoryFromSessions(): Promise<number> {
+    const conversations = await getAll('conversations')
+    const messagesData = await getAll('messages')
+    const existingDocs = await loadByCategory('history')
+    const activeIds = new Set<string>()
+    let count = 0
+
+    for (const conversation of conversations) {
+      if (!conversation?.id) continue
+      const messageRecord = messagesData.find((m: any) => m.id === conversation.id)
+      const messages = Array.isArray(messageRecord?.items) ? messageRecord.items : []
+      const id = toSafeDocId(HISTORY_DOC_PREFIX, conversation.id)
+      const existing = existingDocs.find(f => f.id === id)
+      const content = buildHistoryMarkdown(conversation, messages)
+      const updated: FileEntry = {
+        id,
+        category: 'history',
+        name: conversation.title || '历史会话',
+        content,
+        mimeType: 'text/markdown',
+        size: new TextEncoder().encode(content).length,
+        createdAt: existing?.createdAt || conversation.createdAt || Date.now(),
+        updatedAt: conversation.updatedAt || Date.now(),
+        vaultId: conversation.vaultId || undefined,
+        kind: 'raw',
+        sourceSessionId: conversation.id,
+        sourceMessageIds: messages.map((message: ChatMessage) => message.id).filter(Boolean),
+        metadata: {
+          ...(existing?.metadata || {}),
+          kind: 'session-history',
+          originalId: conversation.id,
+          agentId: conversation.agentId || conversation.scopeKey || '',
+          vaultId: conversation.vaultId || null,
+          messageCount: messages.length,
+        },
+      }
+      await setRecord(STORE, updated)
+      activeIds.add(id)
+      count++
+    }
+
+    for (const doc of existingDocs) {
+      if (doc.metadata?.kind === 'session-history' && !activeIds.has(doc.id)) {
+        await deleteFile(doc.id)
+      }
+    }
+    return count
+  }
+
+  async function syncSkillsFromStore(skills: SkillConfig[]): Promise<number> {
+    const existingDocs = await loadByCategory('skill')
+    const activeSkillIds = new Set(skills.map(s => s.id))
+    let count = 0
+
+    for (const skill of skills) {
+      const folderId = toSafeDocId(SKILL_FOLDER_PREFIX, skill.id)
+      const coreId = toSafeDocId(SKILL_CORE_PREFIX, skill.id)
+      const existingFolder = existingDocs.find(f => f.id === folderId)
+      const skillMd = serializeToSkillMd(skill)
+      const folder: FileEntry = {
+        id: folderId,
+        category: 'skill',
+        name: skill.name,
+        content: '',
+        mimeType: 'folder',
+        size: 0,
+        createdAt: existingFolder?.createdAt || skill.createdAt || Date.now(),
+        updatedAt: skill.updatedAt || Date.now(),
+        metadata: {
+          ...(existingFolder?.metadata || {}),
+          kind: 'skill-folder',
+          isFolder: true,
+          children: [coreId],
+          skillId: skill.id,
+        },
+      }
+      const coreFile: FileEntry = {
+        id: coreId,
+        category: 'skill',
+        name: 'SKILL.md',
+        content: skillMd,
+        mimeType: 'text/markdown',
+        size: new TextEncoder().encode(skillMd).length,
+        createdAt: existingDocs.find(f => f.id === coreId)?.createdAt || skill.createdAt || Date.now(),
+        updatedAt: skill.updatedAt || Date.now(),
+        folderId,
+        metadata: {
+          kind: 'skill-core',
+          isSkillCore: true,
+          skillId: skill.id,
+        },
+      }
+      await setRecord(STORE, folder)
+      await setRecord(STORE, coreFile)
+      count++
+    }
+
+    for (const doc of existingDocs) {
+      const skillId = String(doc.metadata?.skillId || '')
+      const isManagedSkillDoc = doc.metadata?.kind === 'skill-folder' || doc.metadata?.kind === 'skill-core'
+      if (isManagedSkillDoc && skillId && !activeSkillIds.has(skillId)) {
+        await deleteFile(doc.id)
+      }
+    }
+    return count
   }
 
   async function deleteByCategory(category: FileEntry['category']) {
@@ -173,6 +229,10 @@ export function useFileStore() {
     content: string
     topic?: string
     skillId?: string
+    vaultId?: string
+    kind?: FileEntry['kind']
+    sourceSessionId?: string
+    sourceMessageIds?: string[]
     indexed?: boolean
     metadata?: Record<string, unknown>
   }): Promise<FileEntry> {
@@ -184,6 +244,10 @@ export function useFileStore() {
       size: new TextEncoder().encode(opts.content).length,
       topic: opts.topic,
       skillId: opts.skillId,
+      vaultId: opts.vaultId,
+      kind: opts.kind,
+      sourceSessionId: opts.sourceSessionId,
+      sourceMessageIds: opts.sourceMessageIds,
       indexed: opts.indexed ?? false,
       metadata: opts.metadata,
     })
@@ -211,13 +275,119 @@ export function useFileStore() {
     })
   }
 
+  // ─── 文件夹辅助函数（知识库三层结构用） ───
+
+  /** 根据 vaultId 和 metadata.vaultFolder 找到 raw/ 或 wiki/ 根文件夹 */
+  async function findVaultRootFolder(vaultId: string, folderType: 'raw' | 'wiki'): Promise<FileEntry | undefined> {
+    const all = await loadByVault(vaultId)
+    return all.find(f => f.mimeType === 'folder' && f.metadata?.vaultFolder === folderType && !f.folderId)
+  }
+
+  /** 在指定父文件夹下按名称查找子文件夹 */
+  async function findChildFolder(parentFolderId: string, name: string, vaultId: string): Promise<FileEntry | undefined> {
+    const all = await loadByVault(vaultId)
+    return all.find(f => f.mimeType === 'folder' && f.folderId === parentFolderId && f.name === name)
+  }
+
+  /** 按路径（如 "raw/对话记录"）在 vault 中查找文件夹 */
+  async function findFolderByPath(vaultId: string, path: string): Promise<FileEntry | undefined> {
+    const parts = path.split('/').filter(Boolean)
+    if (parts.length === 0) return undefined
+
+    // 第一级：raw 或 wiki 根文件夹
+    const root = await findVaultRootFolder(vaultId, parts[0] as 'raw' | 'wiki')
+    if (!root || parts.length === 1) return root
+
+    // 后续级别
+    let current = root
+    for (let i = 1; i < parts.length; i++) {
+      const child = await findChildFolder(current.id, parts[i], vaultId)
+      if (!child) return undefined
+      current = child
+    }
+    return current
+  }
+
+  /** 创建子文件夹 */
+  async function createFolder(name: string, parentFolderId: string, vaultId: string): Promise<FileEntry> {
+    return addFile({
+      category: 'knowledge',
+      name,
+      content: '',
+      mimeType: 'folder',
+      size: 0,
+      vaultId,
+      folderId: parentFolderId,
+      metadata: { isFolder: true },
+    })
+  }
+
+  /** 获取文件夹下所有直接子项 */
+  async function getChildren(folderId: string, vaultId: string): Promise<FileEntry[]> {
+    const all = await loadByVault(vaultId)
+    return all.filter(f => f.folderId === folderId)
+  }
+
+  /** 获取 vault 的完整文件树（递归） */
+  interface TreeNode {
+    entry: FileEntry
+    children: TreeNode[]
+  }
+
+  async function getVaultTree(vaultId: string): Promise<TreeNode[]> {
+    const all = await loadByVault(vaultId)
+    const byParent = new Map<string, FileEntry[]>()
+
+    // 根节点 = 没有 folderId 的项
+    const roots: FileEntry[] = []
+    for (const f of all) {
+      if (!f.folderId) {
+        roots.push(f)
+      } else {
+        const list = byParent.get(f.folderId) || []
+        list.push(f)
+        byParent.set(f.folderId, list)
+      }
+    }
+
+    function buildTree(entries: FileEntry[]): TreeNode[] {
+      return entries
+        .sort((a, b) => {
+          // 文件夹在前
+          if (a.mimeType === 'folder' && b.mimeType !== 'folder') return -1
+          if (a.mimeType !== 'folder' && b.mimeType === 'folder') return 1
+          return a.name.localeCompare(b.name, 'zh-CN')
+        })
+        .map(entry => ({
+          entry,
+          children: entry.mimeType === 'folder' ? buildTree(byParent.get(entry.id) || []) : [],
+        }))
+    }
+
+    return buildTree(roots)
+  }
+
+  /** 追加内容到已有文件（用于对话记录增量追加） */
+  async function appendToFile(fileId: string, content: string): Promise<void> {
+    const existing = await getFile(fileId)
+    if (!existing) return
+    const newContent = existing.content + content
+    await updateFile(fileId, {
+      content: newContent,
+      size: new TextEncoder().encode(newContent).length,
+    })
+  }
+
   return {
     files,
     loading,
     loadAll,
     loadByCategory,
     loadBySkillId,
+    loadByVault,
     loadUnindexed,
+    syncHistoryFromSessions,
+    syncSkillsFromStore,
     addFile,
     addKnowledge,
     addText,
@@ -226,5 +396,13 @@ export function useFileStore() {
     deleteFile,
     deleteByCategory,
     getFile,
+    // 新增文件夹辅助
+    findVaultRootFolder,
+    findChildFolder,
+    findFolderByPath,
+    createFolder,
+    getChildren,
+    getVaultTree,
+    appendToFile,
   }
 }

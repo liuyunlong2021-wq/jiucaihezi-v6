@@ -28,6 +28,9 @@ export interface EvolutionEntry {
 export interface BrainRawEntry {
   id: string
   skillId: string
+  vaultId?: string
+  sessionId?: string
+  sourceMessageIds?: string[]
   content: string        // 对话原文（immutable source material）
   timestamp: number
   indexed: boolean       // 是否已编译进 wiki
@@ -41,6 +44,7 @@ export interface BrainRawEntry {
 export interface BrainWikiPage {
   id: string
   skillId: string
+  vaultId?: string
   title: string
   content: string        // 编译后的知识页
   sources: string[]      // 来源 raw entry IDs

@@ -15,11 +15,12 @@ import {
   getResolutionOptions,
   getDefaultResolution,
 } from '@/data/creationModels'
+import { sanitizeCreationResults } from '@/utils/creationResults'
 
 // ─── 结果项 ───
 export interface CreationResult {
   url: string
-  type: 'image' | 'video' | 'audio' | 'unknown'
+  type: 'image' | 'video' | 'audio' | 'text' | 'unknown'
   content?: string
   model: string
   task: string
@@ -52,7 +53,11 @@ const STORAGE_KEY = 'jc_cp_state_v3'
 function loadSaved(): Partial<CpState> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : {}
+    const parsed = raw ? JSON.parse(raw) : {}
+    return {
+      ...parsed,
+      results: sanitizeCreationResults<CreationResult>(parsed.results),
+    }
   } catch { return {} }
 }
 
@@ -81,11 +86,7 @@ export function saveCpState() {
   try {
     const { task, modelKey, prompt, tags, title, ar, size, res, dur, results } = cpState
     // BUG-4 修复: 限制保存的结果数量，避免 URL 累积超过 localStorage 5MB 限制
-    const trimmedResults = results.slice(0, 50).map(r => ({
-      ...r,
-      // URL 超过 500 字符的截断（base64 data URL 不应该存进 localStorage）
-      url: r.url.length > 500 ? r.url.slice(0, 500) + '...[truncated]' : r.url,
-    }))
+    const trimmedResults = sanitizeCreationResults<CreationResult>(results, { forStorage: true })
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ task, modelKey, prompt, tags, title, ar, size, res, dur, results: trimmedResults }))
   } catch (e) {
     // 存储失败时至少保存非结果部分

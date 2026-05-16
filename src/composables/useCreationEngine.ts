@@ -1,8 +1,8 @@
 /**
- * useCreationEngine.ts — 创作引擎（并发版）
- * 
- * 核心调用委托给 NewAPI 源码验证的 media-generation.ts
- * 支持连续生成（V4 的 _cpRunningTasks 模式）
+ * @deprecated
+ * useCreationEngine.ts — 旧版阻塞式创作引擎 (V5)
+ * 此文件已废弃。全域媒体生成现已统一迁移至 store/mediaTaskStore.ts。
+ * 保留此文件仅为了短期回退需要，稳定后将删除。
  */
 import { cpState, currentModel, addResult } from '@/composables/useCreation'
 import { RH_CREATION_MODELS } from '@/data/creationModels'

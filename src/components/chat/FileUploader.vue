@@ -1,21 +1,21 @@
 <script setup lang="ts">
 /**
  * FileUploader.vue — 文件上传器（点击 + 拖拽 + 粘贴）
- * 支持：图片（自动压缩）、文本/代码、PDF（文本提取）
+ * 支持：图片、文本/代码、PDF、DOCX/XLSX/PPTX（走后端）
+ * V2: 统一走 useFileUpload，Office文件后端提取，图片大图走URL
  */
 import { ref, computed } from 'vue'
-import {
-  validateFile, isImageFile, isTextFile, isPdfFile,
-  compressImage, extractPdfText, readFileAsText,
-  truncateText, formatSize, TEXT_TRUNCATE_BYTES
-} from '@/utils/fileProcessor'
+import { processFile, type ProcessedFile } from '@/composables/useFileUpload'
+import { formatSize } from '@/utils/fileProcessor'
 
 export interface AttachedFile {
   file: File
   preview?: string
   textContent?: string
+  remoteUrl?: string
   status: 'processing' | 'ready' | 'error'
   error?: string
+  progress?: number
 }
 
 const attachedFiles = ref<AttachedFile[]>([])
@@ -37,7 +37,15 @@ defineExpose({
   handleDragLeave,
   handleDrop,
   handlePaste,
+  addExternalFiles,
 })
+
+/** 外部调用：批量添加 File 对象 */
+function addExternalFiles(files: File[]) {
+  for (const f of files) {
+    addFile(f)
+  }
+}
 
 function showToast(msg: string) {
   toastMsg.value = msg
@@ -100,36 +108,30 @@ async function addFile(file: File) {
   // 去重
   if (attachedFiles.value.some(f => f.file.name === file.name && f.file.size === file.size)) return
 
-  // 校验
-  const validation = validateFile(file)
-  if (!validation.ok) {
-    showToast(validation.error!)
+  // 大小限制 100MB
+  if (file.size > 100 * 1024 * 1024) {
+    showToast(`${file.name} 过大（${formatSize(file.size)}），最大支持 100MB`)
     return
   }
 
-  const entry: AttachedFile = { file, status: 'processing' }
+  const entry: AttachedFile = { file, status: 'processing', progress: 0 }
   attachedFiles.value.push(entry)
 
   try {
-    if (isImageFile(file)) {
-      entry.preview = await compressImage(file)
-      entry.status = 'ready'
-    } else if (isPdfFile(file)) {
-      entry.textContent = await extractPdfText(file)
-      entry.status = 'ready'
-    } else if (isTextFile(file)) {
-      let text = await readFileAsText(file)
-      const { text: truncated, truncated: wasTruncated } = truncateText(text, TEXT_TRUNCATE_BYTES)
-      if (wasTruncated) {
-        showToast(`${file.name} 内容过大，已截取前 500KB`)
-        text = truncated
-      }
-      entry.textContent = text
-      entry.status = 'ready'
-    } else {
-      entry.status = 'error'
-      entry.error = '暂不支持这个文件格式'
-      showToast(entry.error)
+    const result: ProcessedFile = await processFile(file, {
+      maxTextLength: 500 * 1024,
+      preferRemoteImage: true,
+      onProgress: (pf) => { entry.progress = pf.progress },
+    })
+
+    entry.preview = result.previewUrl
+    entry.textContent = result.textContent
+    entry.remoteUrl = result.remoteUrl
+    entry.status = result.status === 'ready' ? 'ready' : 'error'
+    entry.error = result.error
+
+    if (result.status === 'error') {
+      showToast(result.error || '文件处理失败')
     }
   } catch (err: any) {
     entry.status = 'error'
@@ -175,7 +177,7 @@ function getIcon(name: string, type: string) {
   <!-- 附件预览条 -->
   <div v-if="hasFiles" class="attach-bar">
     <div v-for="(af, i) in attachedFiles" :key="i" class="attach-chip" :class="{ 'is-error': af.status === 'error' }">
-      <!-- 处理中 spinner -->
+      <!-- 处理中 spinner + 进度 -->
       <span v-if="af.status === 'processing'" class="attach-spinner"></span>
       <!-- 图片缩略图 -->
       <img v-else-if="af.preview" :src="af.preview" class="attach-thumb" />
@@ -184,8 +186,16 @@ function getIcon(name: string, type: string) {
 
       <span class="attach-name">{{ af.file.name }}</span>
       <span class="attach-size">({{ formatSize(af.file.size) }})</span>
+      <span v-if="af.status === 'processing' && af.progress" class="attach-pct">{{ af.progress }}%</span>
+      <span v-if="af.remoteUrl" class="attach-cloud" title="已上传到云端">
+        <span class="mso" style="font-size:12px">cloud_done</span>
+      </span>
       <span v-if="af.status === 'error'" class="attach-err" :title="af.error">!</span>
       <span class="mso attach-rm" @click="removeFile(i)">close</span>
+      <!-- 上传进度条 -->
+      <div v-if="af.status === 'processing' && af.progress" class="attach-progress">
+        <div class="attach-progress-bar" :style="{ width: af.progress + '%' }"></div>
+      </div>
     </div>
   </div>
 </template>
@@ -227,6 +237,23 @@ function getIcon(name: string, type: string) {
   margin-left: 2px; flex-shrink: 0;
 }
 .attach-rm:hover { color: #e53935; }
+
+.attach-pct {
+  font-size: 10px; color: var(--olive); font-weight: 600;
+  flex-shrink: 0; min-width: 28px; text-align: right;
+}
+.attach-cloud {
+  flex-shrink: 0; color: var(--olive); display: flex; align-items: center;
+}
+.attach-progress {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 2px;
+  background: var(--line); border-radius: 0 0 6px 6px; overflow: hidden;
+}
+.attach-progress-bar {
+  height: 100%; background: var(--olive);
+  transition: width 0.3s ease;
+}
+.attach-chip { position: relative; }
 
 .attach-spinner {
   width: 16px; height: 16px; border-radius: 50%;

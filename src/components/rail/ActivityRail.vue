@@ -15,12 +15,13 @@ const emit = defineEmits<{
 
 // Rail 按钮 — 每个切换 Col 5 的内容
 const tabs = [
-  { key: 'create',   icon: 'build_circle',          label: '创建搭子' },
-  { key: 'agents',   icon: 'deployed_code_account',  label: '搭子仓库' },
-  { key: 'brain',    icon: 'psychology',              label: '长脑子' },
-  { key: 'editor',   icon: 'edit_note',               label: '编辑区' },
-  { key: 'creation', icon: 'photo_camera',            label: '创作面板' },
-  { key: 'files',    icon: 'folder_open',             label: '文件' },
+  { key: 'create',         icon: 'build_circle',          label: '创建搭子' },
+  { key: 'agents',         icon: 'deployed_code_account',  label: '搭子仓库' },
+  { key: 'vaultCreate',    icon: 'library_add',            label: '创建知识库' },
+  { key: 'vaultWarehouse', icon: 'shelves',                label: '知识库仓库' },
+  { key: 'editor',         icon: 'edit_note',               label: '编辑区' },
+  { key: 'creation',       icon: 'photo_camera',            label: '创作面板' },
+  { key: 'files',          icon: 'folder_open',             label: '文件' },
 ]
 
 const bottomTabs = [

@@ -53,7 +53,7 @@ async function saveSettings() {
 
 function getKeyLink() { window.open('https://api.jiucaihezi.studio/keys', '_blank') }
 function goWallet() { window.open('https://api.jiucaihezi.studio/wallet', '_blank') }
-function goInvite() { window.open('https://api.jiucaihezi.studio/wallet', '_blank') }
+function goInvite() { window.open('https://api.jiucaihezi.studio/profile', '_blank') }
 function goSignin() { window.open('https://api.jiucaihezi.studio/profile', '_blank') }
 
 function toggleBigFont() {
@@ -146,7 +146,7 @@ const themeOptions = [
 
       <!-- 版本 -->
       <div class="sp-version">
-        韭菜盒子 V6.0 · Vue 3 模块化架构
+        韭菜盒子 V6.6 · Vue 3 模块化架构
       </div>
     </div>
   </div>

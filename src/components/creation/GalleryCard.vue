@@ -57,7 +57,7 @@ const isText = computed(() => props.type === 'text')
         <span class="mso">arrow_downward</span>
       </button>
       <button class="gc-act danger" @click.stop="emit('delete', index)" title="删除">
-        <span class="mso">delete_outline</span>
+        <span class="mso">delete</span>
       </button>
     </div>
   </div>

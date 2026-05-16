@@ -33,7 +33,7 @@ const emit = defineEmits<{
   (e: 'delete', messageId: string): void
 }>()
 
-const copyLabel = ref('content_copy')
+const copyLabel = ref('复制')
 
 function sanitizeHtml(html: string): string {
   return DOMPurify.sanitize(html, {
@@ -93,8 +93,8 @@ const showImportBtn = computed(() => {
 // 复制消息 (V4 copyMsgFloat 行 7411)
 function copyMessage() {
   navigator.clipboard.writeText(props.content).then(() => {
-    copyLabel.value = 'check'
-    setTimeout(() => { copyLabel.value = 'content_copy' }, 1200)
+    copyLabel.value = '已复制'
+    setTimeout(() => { copyLabel.value = '复制' }, 1200)
   })
 }
 
@@ -186,27 +186,27 @@ function appendToEditor() {
       <!-- 导入/追加编辑区 + 操作按钮（显性一排） -->
       <div v-if="role === 'assistant'" class="msg-action-row">
         <button v-if="showImportBtn" class="msg-action-btn" :class="{ copied: importLabel !== '导入编辑区' }" @click="importToEditor">
-          <span class="mso">{{ importLabel === '导入编辑区' ? 'content_paste_go' : 'check' }}</span> {{ importLabel }}
+          {{ importLabel }}
         </button>
         <button v-if="showImportBtn" class="msg-action-btn append" :class="{ copied: appendLabel !== '追加编辑区' }" @click="appendToEditor">
-          <span class="mso">{{ appendLabel === '追加编辑区' ? 'playlist_add' : 'check' }}</span> {{ appendLabel }}
+          {{ appendLabel }}
         </button>
-        <button class="msg-action-btn" @click="copyMessage" :title="copyLabel === 'check' ? '已复制' : '复制'">
-          <span class="mso">{{ copyLabel }}</span> {{ copyLabel === 'check' ? '已复制' : '复制' }}
+        <button class="msg-action-btn" @click="copyMessage">
+          {{ copyLabel }}
         </button>
         <button class="msg-action-btn danger" @click="emit('delete', messageId)" title="删除">
-          <span class="mso">delete_outline</span> 删除
+          删除
         </button>
       </div>
       <div v-else-if="role === 'user'" class="msg-action-row">
         <button class="msg-action-btn" @click="copyMessage">
-          <span class="mso">{{ copyLabel }}</span> {{ copyLabel === 'check' ? '已复制' : '复制' }}
+          {{ copyLabel }}
         </button>
         <button class="msg-action-btn" @click="emit('retry', messageId)" title="重新发送">
           <span class="mso">refresh</span> 重发
         </button>
         <button class="msg-action-btn danger" @click="emit('delete', messageId)">
-          <span class="mso">delete_outline</span> 删除
+          删除
         </button>
       </div>
     </div>

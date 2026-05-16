@@ -7,6 +7,7 @@
  *   - PILL_MODELS (行 2754)
  */
 import { defineStore } from 'pinia'
+import { useFileStore } from '@/composables/useFileStore'
 import { ref, computed } from 'vue'
 import type { SkillConfig } from '../types/skill'
 import { migrateAgentToSkill, parseSkillMd } from '../types/skill'
@@ -25,21 +26,64 @@ export interface Agent {
   nextAgent?: string
 }
 
-// ─── PILL_MODELS — 精确复制自 code.html 行 2754 ───
-export const PILL_MODELS = [
-  { id: 'claude-opus-4-7', label: 'Opus-4.7' },
-  { id: 'claude-opus-4-6', label: 'Opus' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet' },
-  { id: 'gpt-5.5', label: 'GPT-5.5' },
-  { id: 'gpt-5.4', label: 'GPT-5.4' },
-  { id: 'qwen3.6-plus', label: 'Qwen-3.6' },
-  { id: 'deepseek-v4-flash', label: 'DS-V4-Flash' },
-  { id: 'deepseek-v4-pro', label: 'DS-V4-Pro' },
-  { id: 'openai/gpt-oss-120b:free', label: 'GPT-OSS' },
-  { id: 'google/gemma-4-31b-it:free', label: 'Gemma-31B' },
-  { id: 'gemini-3.1-flash-lite-preview', label: 'G-Flash-Lite' },
-  { id: 'gemini-3.1-pro-preview', label: 'G-3.1-Pro' },
+// ─── 模型系统 ───
+
+export interface ModelEntry {
+  id: string
+  label: string
+  /** 能力分类：text=文本LLM, image=图片生成, video=视频生成, audio=音频生成 */
+  capability?: 'text' | 'image' | 'video' | 'audio'
+}
+
+/** 本地兜底默认模型（当 /v1/models 拉取失败时使用） */
+const DEFAULT_MODELS: ModelEntry[] = [
+  { id: 'claude-opus-4-7', label: 'Opus-4.7', capability: 'text' },
+  { id: 'claude-opus-4-6', label: 'Opus', capability: 'text' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet', capability: 'text' },
+  { id: 'gpt-5.5', label: 'GPT-5.5', capability: 'text' },
+  { id: 'gpt-5.4', label: 'GPT-5.4', capability: 'text' },
+  { id: 'qwen3.6-plus', label: 'Qwen-3.6', capability: 'text' },
+  { id: 'deepseek-v4-flash', label: 'DS-V4-Flash', capability: 'text' },
+  { id: 'deepseek-v4-pro', label: 'DS-V4-Pro', capability: 'text' },
+  { id: 'openai/gpt-oss-120b:free', label: 'GPT-OSS', capability: 'text' },
+  { id: 'google/gemma-4-31b-it:free', label: 'Gemma-31B', capability: 'text' },
+  { id: 'gemini-3.1-flash-lite-preview', label: 'G-Flash-Lite', capability: 'text' },
+  { id: 'gemini-3.1-pro-preview', label: 'G-3.1-Pro', capability: 'text' },
+  // ─── 媒体生成模型 ───
+  { id: 'gpt-image-2', label: '🎨 GPT Image', capability: 'image' },
+  { id: 'grok-video-3', label: '🎬 Grok Video', capability: 'video' },
+  { id: 'seedance-2.0-fast', label: '🎬 Seedance', capability: 'video' },
+  { id: 'suno-5.5', label: '🎵 Suno', capability: 'audio' },
 ]
+
+/** 根据模型 ID 推断能力分类 */
+function inferCapability(id: string): ModelEntry['capability'] {
+  const lower = id.toLowerCase()
+  if (/image|dall|midjourney|sd-|stable.?diff|flux/.test(lower)) return 'image'
+  if (/video|veo|seedance|grok-video|kling|runway|pika|luma/.test(lower)) return 'video'
+  if (/suno|audio|music|tts|whisper/.test(lower)) return 'audio'
+  return 'text'
+}
+
+/** 模型能力层级：知识库整理需要 strong 级别模型 */
+export type ModelTier = 'strong' | 'medium' | 'light'
+
+export function inferModelTier(id: string): ModelTier {
+  const lower = id.toLowerCase()
+  // 强力模型：适合知识库整理、复杂推理
+  if (/opus|gpt-5\.4|gpt-5\.5|o[1-9]|o3|deepseek.*pro|qwen.*plus|gemini.*pro/.test(lower)) return 'strong'
+  // 轻量模型：快速但不适合复杂知识整理
+  if (/haiku|flash.*lite|gemma|free|mini|nano|tiny/.test(lower)) return 'light'
+  // 中等模型：sonnet 等
+  return 'medium'
+}
+
+/** 知识库操作推荐的最低模型 tier */
+export const VAULT_RECOMMENDED_TIER: ModelTier = 'medium'
+
+// 兼容旧代码：导出 PILL_MODELS 作为 DEFAULT_MODELS 的别名
+/** @deprecated 请使用 agentStore.availableModels 代替 */
+export const PILL_MODELS = DEFAULT_MODELS
 
 // ─── PRESETS — 全部改为 SKILL.md 标准格式 ───
 const SKILL_PRESETS: SkillConfig[] = [
@@ -201,7 +245,7 @@ const SKILL_PRESETS: SkillConfig[] = [
     id: 'video-composer', name: '视频合成工具',
     description: '拼接视频片段并添加字幕',
     triggers: ['合成', '拼接', '字幕', '剪辑'],
-    skillContent: 'skill://skills/video-composer/SKILL.md',
+    skillContent: 'skill://skills/video-composer/skill.md',
     references: [], examples: [],
     version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
   },
@@ -221,12 +265,171 @@ const SKILL_PRESETS: SkillConfig[] = [
     references: [], examples: [],
     version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
   },
+  // ─── 纯文本技能（从 skills-main 搬运） ───
+  {
+    id: 'algorithmic-art', name: '算法艺术',
+    description: '用 p5.js 创建交互式生成艺术，输出自包含 HTML 文件',
+    triggers: ['算法艺术', '生成艺术', 'p5', 'generative', 'art', '交互艺术'],
+    skillContent: 'skill://skills/algorithmic-art/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'frontend-design', name: '前端设计',
+    description: '创建独特的生产级前端界面，拒绝千篇一律的 AI 风格',
+    triggers: ['前端设计', 'UI', '界面', '网页设计', 'frontend', 'HTML', 'CSS'],
+    skillContent: 'skill://skills/frontend-design/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'doc-coauthoring', name: '文档协作',
+    description: '三阶段结构化文档协作：收集背景 → 逐节起草 → 读者测试',
+    triggers: ['文档协作', '写文档', '技术文档', '规格文档', '决策文档', '提案'],
+    skillContent: 'skill://skills/doc-coauthoring/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'internal-comms', name: '内部通讯',
+    description: '编写公司内部通讯稿件：周报、新闻稿、FAQ、状态报告',
+    triggers: ['内部通讯', '周报', '新闻稿', 'FAQ', '状态报告', '公司通讯'],
+    skillContent: 'skill://skills/internal-comms/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'brand-guidelines', name: '品牌指南',
+    description: '提供专业品牌色彩和排版规范，为任何内容应用一致的视觉风格',
+    triggers: ['品牌', '配色', '品牌色', '视觉规范', 'brand', '色彩方案'],
+    skillContent: 'skill://skills/brand-guidelines/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  // ─── Office 文档处理技能（需服务器后端） ───
+  {
+    id: 'docx-office', name: 'Word 文档',
+    description: '创建、阅读、编辑 Word 文档(.docx)，支持表格、目录、页眉页脚等专业排版',
+    triggers: ['word', 'docx', '文档', '报告', '合同', '简历', '信函', 'Word'],
+    skillContent: 'skill://skills/docx-office/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'pdf-office', name: 'PDF 处理',
+    description: '读取、合并、拆分、创建 PDF，支持表格提取、水印、加密、OCR',
+    triggers: ['pdf', 'PDF', '合并pdf', '拆分pdf', '水印', 'OCR'],
+    skillContent: 'skill://skills/pdf-office/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'pptx-office', name: '演示文稿',
+    description: '创建精美 PowerPoint 演示文稿(.pptx)，专业配色排版设计',
+    triggers: ['ppt', 'pptx', '演示', '幻灯片', 'PPT', '演示文稿', 'slides'],
+    skillContent: 'skill://skills/pptx-office/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
+  {
+    id: 'xlsx-office', name: 'Excel 表格',
+    description: '创建、分析、编辑 Excel 表格(.xlsx)，支持公式、格式、数据分析',
+    triggers: ['excel', 'xlsx', '表格', '电子表格', 'Excel', '数据分析', 'csv'],
+    skillContent: 'skill://skills/xlsx-office/SKILL.md',
+    references: [], examples: [],
+    version: 1, source: 'preset', createdAt: 0, updatedAt: 0, evolutionLog: [],
+  },
 ]
 
 export const useAgentStore = defineStore('agents', () => {
   const currentAgent = ref<SkillConfig | null>(null)
   const currentModel = ref(localStorage.getItem('jcModel') || 'claude-sonnet-4-6')
   const routerEnabled = ref(localStorage.getItem('jc_router_enabled') !== '0')
+
+  // ─── 动态模型系统 ───
+  /** 响应式模型列表：初始化为本地兜底，/v1/models 成功后替换 */
+  const availableModels = ref<ModelEntry[]>([...DEFAULT_MODELS])
+  const modelsFetched = ref(false)
+  const modelsFetchError = ref('')
+
+  /** 按能力分类的视图 */
+  const textModels = computed(() => availableModels.value.filter(m => (m.capability || 'text') === 'text'))
+  const imageModels = computed(() => availableModels.value.filter(m => m.capability === 'image'))
+  const videoModels = computed(() => availableModels.value.filter(m => m.capability === 'video'))
+  const audioModels = computed(() => availableModels.value.filter(m => m.capability === 'audio'))
+
+  /**
+   * 静默拉取 /v1/models，成功后合并到 availableModels。
+   * 策略：API 返回的模型与本地默认合并（去重），保留本地 label。
+   */
+  async function fetchModels() {
+    try {
+      const apiKey = localStorage.getItem('jcApiKey') || ''
+      if (!apiKey) return // 没有 key 就用兜底
+      const apiBase = 'https://api.jiucaihezi.studio'
+      const res = await fetch(`${apiBase}/v1/models`, {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      const data = json.data || json.models || json
+      if (!Array.isArray(data) || data.length === 0) return
+
+      // 构建 ID → 默认标签的映射，保留我们精心取的中文标签
+      const defaultMap = new Map(DEFAULT_MODELS.map(m => [m.id, m]))
+
+      const merged: ModelEntry[] = data.map((item: any) => {
+        const id = item.id || item.model || ''
+        if (!id) return null
+        const existing = defaultMap.get(id)
+        return {
+          id,
+          label: existing?.label || item.name || id.split('/').pop() || id,
+          capability: existing?.capability || inferCapability(id),
+        }
+      }).filter(Boolean) as ModelEntry[]
+
+      // 确保默认媒体模型始终存在（用户 key 可能未开通，但我们也要展示）
+      for (const dm of DEFAULT_MODELS) {
+        if (!merged.some(m => m.id === dm.id)) {
+          merged.push(dm)
+        }
+      }
+
+      availableModels.value = merged
+      modelsFetched.value = true
+      modelsFetchError.value = ''
+
+      // 缓存到 localStorage（下次启动时快速恢复，再异步刷新）
+      try {
+        localStorage.setItem('jc_models_cache', JSON.stringify(merged))
+      } catch { /* quota exceeded, ignore */ }
+    } catch (e: any) {
+      modelsFetchError.value = e.message || 'fetch failed'
+      // 尝试从缓存恢复
+      try {
+        const cached = localStorage.getItem('jc_models_cache')
+        if (cached) {
+          const parsed = JSON.parse(cached)
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            availableModels.value = parsed
+            modelsFetched.value = true
+          }
+        }
+      } catch { /* noop */ }
+    }
+  }
+
+  // 启动时立即尝试从缓存恢复
+  try {
+    const cached = localStorage.getItem('jc_models_cache')
+    if (cached) {
+      const parsed = JSON.parse(cached)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        availableModels.value = parsed
+      }
+    }
+  } catch { /* noop */ }
 
   // ═══ 三层迁移系统 ═══
 
@@ -402,7 +605,7 @@ export const useAgentStore = defineStore('agents', () => {
     const cached = skillContentCache.get(skill.id)
     if (cached) return { ...skill, skillContent: cached }
     // 异步加载（不阻塞），先返回占位内容
-    const filePath = '/' + skill.skillContent.replace('skill://', '')
+    const filePath = new URL(skill.skillContent.replace('skill://', ''), window.location.href).toString()
     fetch(filePath).then(r => {
       if (r.ok) return r.text()
       throw new Error(`${r.status}`)
@@ -493,7 +696,7 @@ export const useAgentStore = defineStore('agents', () => {
   }
 
   const modelLabel = computed(() => {
-    const f = PILL_MODELS.find(x => x.id === currentModel.value)
+    const f = availableModels.value.find(x => x.id === currentModel.value)
     return f ? f.label : currentModel.value.split('-')[0]
   })
 
@@ -582,18 +785,34 @@ export const useAgentStore = defineStore('agents', () => {
     localStorage.setItem('jc_my_skills', JSON.stringify(ids))
   }
 
-  function moveToMy(id: string) {
+  async function moveToMy(id: string) {
     const ids: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
     if (!ids.includes(id)) {
       ids.push(id)
       saveMySkillIds(ids)
+
+      // 同步到 FileStore: 创建搭子物理文件夹
+      try {
+        const fileStore = useFileStore()
+        await fileStore.syncSkillsFromStore(loadSkills())
+      } catch (e) {
+        console.error('Failed to sync agent to FileTree', e)
+      }
     }
   }
 
-  function moveToPreset(id: string) {
+  async function moveToPreset(id: string) {
     const ids: string[] = JSON.parse(localStorage.getItem('jc_my_skills') || '[]')
     saveMySkillIds(ids.filter(i => i !== id))
     if (currentAgent.value?.id === id) currentAgent.value = null
+
+    // 同步到 FileStore: 删除物理文件夹
+    try {
+      const fileStore = useFileStore()
+      await fileStore.syncSkillsFromStore(loadSkills())
+    } catch (e) {
+      console.error('Failed to sync agent removal to FileTree', e)
+    }
   }
 
   function isInMySkills(id: string): boolean {
@@ -667,6 +886,16 @@ export const useAgentStore = defineStore('agents', () => {
     migrationCount,
     agents,
     modelLabel,
+    // ─── 动态模型系统 ───
+    availableModels,
+    modelsFetched,
+    modelsFetchError,
+    textModels,
+    imageModels,
+    videoModels,
+    audioModels,
+    fetchModels,
+    // ─── 搭子管理 ───
     loadAgents,
     loadSkills,
     getCustomAgents,

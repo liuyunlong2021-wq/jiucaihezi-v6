@@ -13,7 +13,7 @@ import { useAgentStore } from '@/stores/agentStore'
 import { resolveApiConfig, buildHeaders } from '@/utils/api'
 import type { SkillConfig } from '@/types/skill'
 import { parseSkillMd } from '@/types/skill'
-import { isPdfFile, extractPdfText } from '@/utils/fileProcessor'
+import { processFile } from '@/composables/useFileUpload'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
 const store = useAgentStore()
@@ -43,27 +43,28 @@ const step1Mode = computed(() => {
   return hasReference.value ? 'reference' : 'describe'
 })
 
-// ─── 文件上传处理（V4 agent-builder-source-input） ───
-function handleFileUpload(e: Event) {
+// ─── 文件上传处理（统一走 processFile） ───
+const isUploading = ref(false)
+
+async function handleFileUpload(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
 
   uploadedFileName.value = file.name
+  isUploading.value = true
 
-  if (isPdfFile(file)) {
-    extractPdfText(file, 20).then(text => {
-      referenceText.value = text.slice(0, 8000)
-    }).catch(() => {
-      referenceText.value = '[PDF 解析失败，请粘贴文本内容]'
-    })
-  } else {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const text = reader.result as string
-      referenceText.value = text.slice(0, 8000)
+  try {
+    const result = await processFile(file, { maxTextLength: 8000 })
+    if (result.textContent) {
+      referenceText.value = result.textContent
+    } else {
+      referenceText.value = '[文件解析失败，请粘贴文本内容]'
     }
-    reader.readAsText(file)
+  } catch {
+    referenceText.value = '[文件解析失败，请粘贴文本内容]'
+  } finally {
+    isUploading.value = false
   }
 }
 
@@ -118,20 +119,48 @@ async function generateSkillMd() {
       userMsg = `## 用途\n${purposeText.value}\n\n## 期望的输出规范\n${outputFormat.value}\n\n## 补充说明\n${followupAnswers.value || '无'}`
     }
 
+    const toolHint = `\n\n如果搭子需要处理文档文件，可以声明使用以下后端工具：
+- office_create: 创建文档(docx/pdf/xlsx)
+- office_read: 读取文档内容
+- office_convert: 格式转换(如docx转pdf)
+- office_execute: 执行Python/JS代码处理文档
+在 SKILL.md 中用 ## 可用工具 段落声明它们。`
+
     const sysPrompt = hasReference.value
-      ? `你是 colleague-skill 的 intake 引擎。用户提供了参考资料和补充说明。
-请生成一份完整的 SKILL.md body（不含 frontmatter），包含：
-- ## 角色定义
-- ## 工作流程
-- ## 输出格式
-- ## 规则约束（从参考资料中提取）
-- ## 示例`
-      : `你是 colleague-skill 的 intake 引擎。用户描述了想让搭子做什么，并补充了细节。
-请生成一份完整的 SKILL.md body（不含 frontmatter），包含：
-- ## 角色定义
-- ## 工作流程
-- ## 输出格式
-- ## 规则约束`
+      ? `你是韭菜盒子搭子创建引擎。用户提供了参考资料和补充说明。
+请生成一份高质量的 SKILL.md body（不含 frontmatter），结构如下：
+
+## 角色定义
+用一句话定义搭子的身份和核心价值。避免泛泛的"你是一个AI助手"。
+
+## 核心规则
+从参考资料中提取 3-7 条具体的、可执行的规则。每条规则要有明确的判断标准。
+
+## 工作流程
+分步骤描述搭子的工作流程。每步要有明确的输入和输出。
+
+## 输出格式
+用代码块或模板展示期望的输出格式。要具体，不要只说"格式清晰"。
+
+## 边界
+明确什么不该做、什么情况下应该拒绝或要求澄清。${toolHint}`
+      : `你是韭菜盒子搭子创建引擎。用户描述了想让搭子做什么，并补充了细节。
+请生成一份高质量的 SKILL.md body（不含 frontmatter），结构如下：
+
+## 角色定义
+用一句话定义搭子的身份和核心价值。要具体，避免"你是一个AI助手"。
+
+## 工作流程
+分步骤描述工作流程，每步有明确的输入/输出。
+
+## 输出格式
+用代码块或模板展示输出格式。用户说的"输出规范"转化为可执行的模板。
+
+## 规则约束
+3-5 条关键规则，每条具体可执行。
+
+## 边界
+什么不该做、什么要拒绝。${toolHint}`
 
     const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
       method: 'POST',
@@ -419,10 +448,10 @@ function saveSkill() {
         <textarea v-model="referenceText" class="wizard-textarea" rows="6" placeholder="粘贴参考资料/标准答案..."></textarea>
         <!-- 文件上传（Phase 2 新增） -->
         <div class="wizard-upload-row">
-          <label class="wizard-upload-btn">
-            <span class="mso" style="font-size:16px">upload_file</span>
-            {{ uploadedFileName || '上传文件（TXT/MD/PDF）' }}
-            <input type="file" accept=".txt,.md,.pdf,.doc,.docx" @change="handleFileUpload" hidden />
+          <label class="wizard-upload-btn" :class="{ uploading: isUploading }">
+            <span class="mso" style="font-size:16px">{{ isUploading ? 'progress_activity' : 'upload_file' }}</span>
+            {{ isUploading ? '解析中...' : (uploadedFileName || '上传文件（TXT/MD/PDF/DOCX/XLSX/PPTX）') }}
+            <input type="file" accept=".txt,.md,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.json" @change="handleFileUpload" hidden :disabled="isUploading" />
           </label>
         </div>
         <input v-model="referenceUrl" class="wizard-input" placeholder="参考链接（可选）" style="margin-top:8px" />
@@ -568,6 +597,8 @@ function saveSkill() {
   transition: all .15s;
 }
 .wizard-upload-btn:hover { border-color: var(--olive); color: var(--olive); }
+.wizard-upload-btn.uploading { border-color: var(--olive); color: var(--olive); animation: upload-pulse 1.5s ease infinite; }
+@keyframes upload-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .6; } }
 /* AI 追问 */
 .wizard-followup-q {
   padding: 12px 14px; border-radius: 10px;

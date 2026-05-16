@@ -66,6 +66,18 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
     defSize: 'auto',
   },
 
+  // ═══ 图片 — Grok Image (T8grok.md: grok-4.2-image) ═══
+  'grok-4.2-image': {
+    label: 'Grok Image',
+    tasks: ['text-image', 'image-image'],
+    provider: 'newapi-image',
+    modelName: 'grok-4.2-image',
+    // T8grok.md: aspect_ratio 参数（非 size）
+    ar: ['1:1', '2:3', '3:2', '9:16', '16:9'],
+    defAr: '1:1',
+    maxFiles: 1,
+  },
+
   // ═══ 视频 — Grok Video HD (渠道18: 720P/1080P, 10-15秒, ¥0.2/秒) ═══
   'grok-video-3': {
     label: 'Grok Video HD',
@@ -76,8 +88,8 @@ export const RH_CREATION_MODELS: Record<string, CreationModel> = {
     defAr: '16:9',
     res: ['720P', '1080P'],
     defRes: '720P',
-    dur: [10, 15],
-    defDur: 10,
+    dur: [6, 10],   // T8grok.md: duration enum 6, 10
+    defDur: 6,
     maxFiles: 7,  // 最多7张参考图
   },
 

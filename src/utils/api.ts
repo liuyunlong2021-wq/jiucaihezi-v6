@@ -85,6 +85,43 @@ export function buildChatErrorMessage(status: number, payload: any, fallbackText
 }
 
 /**
+ * 通用 LLM 调用（非流式）
+ * 返回 assistant 消息的 content 文本
+ */
+export async function callLLM(opts: {
+  model?: string
+  systemPrompt: string
+  userMessage: string
+  temperature?: number
+  maxTokens?: number
+}): Promise<string> {
+  const config = await resolveApiConfig()
+  const model = opts.model || config.model || 'claude-sonnet-4-6'
+  const res = await fetch(`${config.apiBase}/v1/chat/completions`, {
+    method: 'POST',
+    headers: buildHeaders(config),
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: opts.systemPrompt },
+        { role: 'user', content: opts.userMessage },
+      ],
+      temperature: opts.temperature ?? 0.3,
+      max_tokens: opts.maxTokens ?? 2000,
+      stream: false,
+    }),
+  })
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}))
+    throw new Error(buildChatErrorMessage(res.status, payload, '请求失败'))
+  }
+  const data = await res.json()
+  const content = data.choices?.[0]?.message?.content || ''
+  // 清理可能的 markdown code fence
+  return content.replace(/^```json\s*/m, '').replace(/```\s*$/m, '').trim()
+}
+
+/**
  * 构建云同步请求头 — 精确复制自 code.html 行 2156-2181
  * 用于对话历史/搭子/偏好等云同步
  */

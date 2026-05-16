@@ -37,14 +37,118 @@ import {
   removeFile,
   saveCpState,
 } from '@/composables/useCreation'
-import { runCreation } from '@/composables/useCreationEngine'
-import { onEvent } from '@/utils/eventBus'
+
+import { onEvent, emitEvent } from '@/utils/eventBus'
+import { useMediaTaskStore } from '@/stores/mediaTaskStore'
+import type { MediaTask } from '@/stores/mediaTaskStore'
+import { processFile } from '@/composables/useFileUpload'
 
 // --- 新增 UI 组件 ---
 import GalleryCard from './GalleryCard.vue'
 import GallerySizeControl from './GallerySizeControl.vue'
 import GalleryLightbox from './GalleryLightbox.vue'
 import GalleryLoadingCard from './GalleryLoadingCard.vue'
+
+const mediaTaskStore = useMediaTaskStore()
+
+// ─── 新版生成入口：走 mediaTaskStore 统一调度 ───
+async function runCreationViaTaskStore() {
+  const m = currentModel.value
+  if (!m) { cpState.progressText = '请先选择模型'; return }
+  if (!cpState.prompt.trim() && m.provider !== 'newapi-suno') {
+    cpState.progressText = '请输入提示词'; return
+  }
+
+  const modelDef = m
+  const mediaType = modelDef.provider === 'newapi-image' ? 'image' as const
+    : modelDef.provider === 'newapi-suno' ? 'audio' as const : 'video' as const
+
+  // 快照参数
+  const refImages: string[] = []
+  for (const f of cpState.files) {
+    if (f.type.startsWith('image/') || f.type.startsWith('video/')) {
+      refImages.push(await fileToDataUrl(f))
+    }
+  }
+
+  cpState.runningTasks++
+  cpState.generating = true
+  cpState.progressText = `${cpState.runningTasks}个任务生成中...`
+
+  try {
+    await mediaTaskStore.submitTask({
+      type: mediaType,
+      model: modelDef.modelName,
+      modelLabel: modelDef.label,
+      prompt: cpState.prompt,
+      referenceImages: refImages,
+      source: 'creation',
+      imageParams: mediaType === 'image' ? {
+        model: modelDef.modelName,
+        prompt: cpState.prompt,
+        size: cpState.size !== 'auto' ? cpState.size : undefined,
+        aspectRatio: cpState.ar || '1:1',
+        resolution: cpState.res || '1k',
+        image: refImages[0],
+      } : undefined,
+      videoParams: mediaType === 'video' ? {
+        model: modelDef.modelName,
+        prompt: cpState.prompt,
+        aspectRatio: cpState.ar || '16:9',
+        resolution: cpState.res,
+        duration: cpState.dur,
+        imageUrl: refImages[0],
+        imageUrls: refImages.length > 1 ? refImages : undefined,
+      } : undefined,
+    })
+  } catch (e: any) {
+    cpState.progressText = `提交失败: ${(e.message || e).toString().slice(0, 100)}`
+  }
+}
+
+// 监听任务完成事件，同步到旧版画廊
+const offTaskComplete = onEvent('media-task-complete', (payload: any) => {
+  if (payload.source === 'creation') {
+    // 插入到现有 cpState.results 头部
+    cpState.results.unshift({
+      url: payload.url,
+      type: payload.type,
+      content: payload.prompt || '',
+      model: payload.model || 'unknown',
+      task: payload.type === 'image' ? 'text-image' : payload.type === 'video' ? 'text-video' : 'text-music',
+      ts: Date.now(),
+    })
+    saveCpState()
+    // 更新计数器
+    cpState.runningTasks = Math.max(0, cpState.runningTasks - 1)
+    cpState.generating = cpState.runningTasks > 0
+    if (!cpState.generating) {
+      cpState.progressText = ''
+      cpState.progress = 0
+    } else {
+      cpState.progressText = `${cpState.runningTasks}个任务生成中...`
+    }
+  }
+})
+
+/** 图片/视频处理：大文件走后端上传返回 URL，小文件本地压缩 */
+async function fileToDataUrl(f: File): Promise<string> {
+  try {
+    const result = await processFile(f, { preferRemoteImage: true, compressTarget: 4 * 1024 * 1024 })
+    // 优先使用远程 URL（大文件）
+    if (result.remoteUrl) return result.remoteUrl
+    // 其次使用本地预览
+    if (result.previewUrl) return result.previewUrl
+  } catch { /* 回退到 FileReader */ }
+
+  // 最终回退
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(f)
+  })
+}
 
 // 任务/模型 popover (原有逻辑不变)
 const openPop = ref<string>('')
@@ -187,6 +291,18 @@ const canSend = computed(() =>
   !!cpState.prompt?.trim() || cpState.files.length > 0
 )
 
+const offSendToGallery = onEvent('send-to-gallery', (payload: any) => {
+  cpState.results.unshift({
+    url: payload.url,
+    type: payload.type,
+    content: payload.name,
+    model: 'reference',
+    task: 'import',
+    ts: Date.now()
+  })
+  saveCpState()
+})
+
 const offImportToCreation = onEvent('import-to-creation', async (payload: any) => {
   try {
     const res = await fetch(payload.url)
@@ -200,13 +316,17 @@ const offImportToCreation = onEvent('import-to-creation', async (payload: any) =
     console.error('Import failed', e)
   }
 })
-onBeforeUnmount(offImportToCreation)
+onBeforeUnmount(() => {
+  offImportToCreation()
+  offSendToGallery()
+  offTaskComplete()
+})
 </script>
 
 <template>
   <div class="cp" :class="'size-' + gallerySize">
     <div class="cp-toolbar">
-      <span class="cp-title"><span class="mso">movie_filter</span>创作面板</span>
+      <span class="cp-title"><span class="mso">movie_filter</span><span class="cp-title-text">创作面板</span></span>
       <span class="cp-toolbar-spacer" />
       <GallerySizeControl :model-value="gallerySize" @update:model-value="onSizeChange" />
     </div>
@@ -360,7 +480,7 @@ onBeforeUnmount(offImportToCreation)
       </div>
       <div class="cp-submit">
         <button class="cp-send-btn" :class="{ ready: canSend, generating: cpState.runningTasks > 0 }"
-                @click="runCreation" title="生成">
+                @click="runCreationViaTaskStore" title="生成">
           <span v-if="cpState.runningTasks > 0" class="cp-running-badge">{{ cpState.runningTasks }}</span>
           <span class="mso">arrow_upward</span>
         </button>
@@ -374,11 +494,14 @@ onBeforeUnmount(offImportToCreation)
 
 /* Toolbar */
 .cp-toolbar {
-  display: flex; align-items: center; padding: 10px 16px; gap: 8px;
+  display: flex; align-items: center; padding: 0 16px; gap: 8px; height: var(--app-header-height); box-sizing: border-box;
   border-bottom: 1px solid var(--line); flex-shrink: 0;
 }
-.cp-title { font-size: 14px; font-weight: 700; color: var(--ink1); display: flex; align-items: center; gap: 4px; }
+.cp-title { font-size: 14px; font-weight: 700; color: var(--ink1); display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cp-title .mso { font-size: 16px; color: var(--olive); }
+@container (max-width: 250px) {
+  .cp-title-text { display: none; }
+}
 .cp-toolbar-spacer { flex: 1; }
 
 /* ★ 画廊网格 ★ */

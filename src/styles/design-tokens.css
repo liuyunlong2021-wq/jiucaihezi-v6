@@ -30,7 +30,7 @@
   --jc-shadow-lg: 0 20px 40px var(--jc-shadow-color);
 
   --jc-font-display: 'Noto Serif SC', 'Noto Serif', serif;
-  --jc-font-body: 'Manrope', 'Inter', system-ui, sans-serif;
+  --jc-font-body: 'Inter', system-ui, sans-serif;
 
   --jc-radius-sm: 0.375rem;
   --jc-radius-md: 0.5rem;
@@ -54,13 +54,20 @@
   --bg: var(--jc-surface);
   --surface: var(--jc-surface);
   --surface-alt: var(--jc-surface-container-low);
+  --paper: var(--jc-surface-container-lowest);
   --ink: var(--jc-on-surface);
+  --ink1: var(--jc-on-surface);
   --ink2: var(--jc-on-surface-variant);
   --ink3: color-mix(in srgb, var(--jc-on-surface-variant) 68%, var(--jc-surface));
   --border: var(--jc-outline-variant);
   --border2: color-mix(in srgb, var(--jc-outline-variant) 58%, transparent);
+  --line: var(--jc-outline-variant);
   --radius: 12px;
   --radius-sm: 8px;
+  
+  /* Layout & Typography Defaults */
+  --font-base: 14px;
+  --app-header-height: 52px;
 }
 
 :root[data-theme="dark"], [data-theme="dark"] {

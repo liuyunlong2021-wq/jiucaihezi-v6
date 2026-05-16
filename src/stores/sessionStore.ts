@@ -10,12 +10,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as idb from '@/utils/idb'
+import { emitEvent } from '@/utils/eventBus'
 import type { ChatMessage } from '@/composables/useChat'
 
 export interface Session {
   id: string
   title: string
   agentId: string
+  vaultId: string | null
+  contextPolicy: 'vault-only' | 'no-memory'
   createdAt: number
   updatedAt: number
   messageCount: number
@@ -53,7 +56,9 @@ export const useSessionStore = defineStore('sessions', () => {
   async function saveSession(
     sessionId: string,
     agentId: string,
-    messages: ChatMessage[]
+    messages: ChatMessage[],
+    vaultId: string | null = null,
+    contextPolicy: Session['contextPolicy'] = vaultId ? 'vault-only' : 'no-memory',
   ) {
     if (!messages.length) return
 
@@ -69,6 +74,8 @@ export const useSessionStore = defineStore('sessions', () => {
       title,
       kind: 'active',
       agentId: agentId || '',
+      vaultId,
+      contextPolicy,
       createdAt: existingRecord?.createdAt || now,
       updatedAt: now,
     }
@@ -93,7 +100,10 @@ export const useSessionStore = defineStore('sessions', () => {
               size: img.length,
               createdAt: existing?.createdAt || now,
               updatedAt: now,
-              metadata: { kind: 'chat-image', sessionId, messageId: cleaned.id, imageIndex: index },
+              vaultId,
+              sourceSessionId: sessionId,
+              sourceMessageIds: [cleaned.id],
+              metadata: { kind: 'chat-image', sessionId, messageId: cleaned.id, imageIndex: index, vaultId },
             })
             return `${IMAGE_REF_PREFIX}${imageId}`
           } catch {
@@ -117,6 +127,8 @@ export const useSessionStore = defineStore('sessions', () => {
       id: sessionId,
       title,
       agentId: agentId || '',
+      vaultId,
+      contextPolicy,
       createdAt: existingIdx >= 0 ? sessions.value[existingIdx].createdAt : now,
       updatedAt: now,
       messageCount: messages.length,
@@ -126,6 +138,7 @@ export const useSessionStore = defineStore('sessions', () => {
     } else {
       sessions.value.unshift(sessionMeta)
     }
+    emitEvent('refresh-file-list', { category: 'history' })
   }
 
   // ─── 加载对话消息 ───
@@ -163,6 +176,8 @@ export const useSessionStore = defineStore('sessions', () => {
         id: r.id,
         title: r.title || '无主题对话',
         agentId: r.agentId || r.scopeKey || '',
+        vaultId: r.vaultId || null,
+        contextPolicy: r.contextPolicy || (r.vaultId ? 'vault-only' : 'no-memory'),
         createdAt: r.createdAt || 0,
         updatedAt: r.updatedAt || 0,
         messageCount: messageCounts.get(r.id) || 0,
@@ -171,7 +186,7 @@ export const useSessionStore = defineStore('sessions', () => {
   }
 
   // ─── 新建对话 ───
-  function startNewSession(agentId: string): string {
+  function startNewSession(agentId: string, vaultId: string | null = null): string {
     const id = createSessionId()
     activeSessionId.value = id
     localStorage.setItem('jc_active_session', id)
@@ -198,6 +213,7 @@ export const useSessionStore = defineStore('sessions', () => {
       activeSessionId.value = ''
       localStorage.removeItem('jc_active_session')
     }
+    emitEvent('refresh-file-list', { category: 'history' })
   }
 
   // ─── 重命名对话 ───
@@ -210,6 +226,7 @@ export const useSessionStore = defineStore('sessions', () => {
     }
     const idx = sessions.value.findIndex(s => s.id === sessionId)
     if (idx !== -1) sessions.value[idx].title = newTitle
+    emitEvent('refresh-file-list', { category: 'history' })
   }
 
   return {
